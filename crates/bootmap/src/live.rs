@@ -318,10 +318,7 @@ impl Scene {
             style: self.style,
             cam: self.cam,
             hover,
-            rings: match self.style {
-                Style::Radial => 1.0,
-                Style::Force => self.sim.params.radial * 0.8,
-            },
+            rings: ring_opacity(self.style),
         }
     }
 
@@ -373,10 +370,7 @@ impl Scene {
             style: self.style,
             cam: self.cam,
             hover,
-            rings: match self.style {
-                Style::Radial => 1.0,
-                Style::Force => self.sim.params.radial * 0.8,
-            },
+            rings: ring_opacity(self.style),
         };
         self.renderer.render(pm, &frame, &self.source.tl, t, wall);
     }
@@ -408,5 +402,14 @@ impl Stats {
             );
             *self = Stats::default();
         }
+    }
+}
+
+/// Depth-ring guides are exact in radial mode. In force mode units only drift
+/// toward their depth, so drawn rings would suggest precision that isn't there.
+fn ring_opacity(style: Style) -> f32 {
+    match style {
+        Style::Radial => 1.0,
+        Style::Force => 0.0,
     }
 }
