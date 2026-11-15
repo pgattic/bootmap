@@ -36,6 +36,27 @@ impl Source {
         Ok(Self { tl, mode: Mode::Live { rx, finished_at: None, disconnected: false } })
     }
 
+    /// Shutdown view: when the shutdown began, after marking units that were
+    /// already being stopped when we took the snapshot.
+    pub fn begin_shutdown(&mut self) -> Usec {
+        let now = monotonic_now();
+        let from = match self.tl.phases.shutdown_start {
+            0 => now,
+            t => t.min(now),
+        };
+        let stopping: Vec<String> = self
+            .tl
+            .units
+            .values()
+            .filter(|u| u.state == bootmap_core::UnitState::Deactivating)
+            .map(|u| u.name.clone())
+            .collect();
+        for unit in stopping {
+            self.tl.apply(bootmap_core::Event { t: now, unit, state: bootmap_core::UnitState::Deactivating });
+        }
+        from
+    }
+
     /// Drain pending changes. Returns true if the set of units changed
     /// (a re-layout is needed).
     pub fn poll(&mut self) -> bool {

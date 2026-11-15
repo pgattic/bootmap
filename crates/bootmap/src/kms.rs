@@ -171,6 +171,7 @@ impl Signals {
 /// display shows up before `deadline`, or if we are asked to stop or release
 /// while waiting (then there is nothing to draw on, but still a boot to record).
 fn open_any(deadline: Instant, sig: &Signals) -> Option<Output> {
+    let mut seen = std::collections::HashSet::new();
     loop {
         let mut cards: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
             .map(|rd| {
@@ -184,7 +185,13 @@ fn open_any(deadline: Instant, sig: &Signals) -> Option<Output> {
         for c in &cards {
             match Output::open(c) {
                 Ok(o) => return Some(o),
-                Err(e) => eprintln!("bootmap: {}: {e:#}", c.display()),
+                Err(e) => {
+                    // Retried every 100 ms: log each distinct reason once.
+                    let msg = format!("{}: {e:#}", c.display());
+                    if seen.insert(msg.clone()) {
+                        eprintln!("bootmap: {msg}");
+                    }
+                }
             }
         }
         if sig.stopped() || sig.released() {
@@ -205,17 +212,29 @@ fn is_simpledrm(card: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Put the active VT in graphics mode so the console cursor/text stays hidden.
+/// Put a VT in graphics mode so the console cursor/text stays hidden.
 struct VtGraphics(Option<File>);
 const KDSETMODE: u64 = 0x4B3A;
+const VT_ACTIVATE: u64 = 0x5606;
 extern "C" {
     fn ioctl(fd: i32, req: u64, ...) -> i32;
 }
 impl VtGraphics {
-    fn enter() -> Self {
-        let f = OpenOptions::new().read(true).write(true).open("/dev/tty0").ok();
+    /// `switch_to: None` uses the VT in front. `Some(n)` brings VT `n` to
+    /// the front first: a running compositor then loses its VT, and with it
+    /// DRM master, which is how we get the display back at shutdown.
+    fn enter(switch_to: Option<u32>) -> Self {
+        let path = match switch_to {
+            Some(n) => format!("/dev/tty{n}"),
+            None => "/dev/tty0".to_string(),
+        };
+        let f = OpenOptions::new().read(true).write(true).open(path).ok();
         if let Some(f) = &f {
-            // SAFETY: KDSETMODE takes an int argument.
+            if let Some(n) = switch_to {
+                // SAFETY: VT_ACTIVATE takes the VT number as an int argument.
+                unsafe { ioctl(f.as_raw_fd(), VT_ACTIVATE, n as i32) };
+            }
+            // SAFETY: KDSETMODE takes an int argument; 1 = KD_GRAPHICS.
             unsafe { ioctl(f.as_raw_fd(), KDSETMODE, 1i32) };
         }
         Self(f)
@@ -257,11 +276,29 @@ fn save(record: &Path, scene: &Scene) {
 /// the rest of the boot to finish so the recording is complete.
 const RECORD_AFTER_RELEASE: Duration = Duration::from_secs(60);
 
-pub fn run(sig: Signals, source: Source, graph: GraphArgs, record: PathBuf, hold: f32, released_marker: PathBuf) -> Result<()> {
-    let replay = matches!(source.mode, crate::live::Mode::Replay { .. });
+/// `shutdown_vt`: Some(n) runs the shutdown view on VT `n` instead of following a boot.
+pub fn run(
+    sig: Signals,
+    mut source: Source,
+    graph: GraphArgs,
+    record: PathBuf,
+    hold: f32,
+    released_marker: PathBuf,
+    shutdown_vt: Option<u32>,
+) -> Result<()> {
+    let shutdown = shutdown_vt.is_some();
+    let shutdown_from = shutdown.then(|| source.begin_shutdown());
+    // A shutdown is not a boot recording: never overwrite the saved timeline.
+    let replay = shutdown || matches!(source.mode, crate::live::Mode::Replay { .. });
     let mut scene = Scene::new(source, &graph);
-    let mut vt = Some(VtGraphics::enter());
-    let mut out = open_any(Instant::now() + Duration::from_secs(20), &sig);
+    scene.renderer.opts.shutdown_from = shutdown_from;
+    let mut vt = Some(VtGraphics::enter(shutdown_vt));
+    // At shutdown the compositor may take a moment to let go of the display.
+    let wait = Duration::from_secs(if shutdown { 30 } else { 20 });
+    let mut out = open_any(Instant::now() + wait, &sig);
+    if shutdown && out.is_some() {
+        eprintln!("bootmap: showing shutdown");
+    }
     sd_notify("READY=1");
     let size = out.as_ref().map(|o| o.size).unwrap_or((1, 1));
     let mut pm = tiny_skia::Pixmap::new(size.0, size.1).context("pixmap")?;
@@ -311,7 +348,7 @@ pub fn run(sig: Signals, source: Source, graph: GraphArgs, record: PathBuf, hold
             }
         }
 
-        if let Some(done) = scene.source.finished_for() {
+        if let Some(done) = scene.source.finished_for().filter(|_| !shutdown) {
             if !saved && !replay {
                 save(&record, &scene);
                 saved = true;

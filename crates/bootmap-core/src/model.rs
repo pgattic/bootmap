@@ -147,6 +147,9 @@ pub struct Phases {
     pub userspace: Usec,
     /// Zero while boot has not finished.
     pub finish: Usec,
+    /// When a shutdown began (zero unless the system is shutting down).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shutdown_start: Usec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,7 +195,12 @@ impl BootTimeline {
                 self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Activating });
             }
             match (u.t_active, u.state) {
-                (Some(t), _) => {
+                (Some(t), state) => {
+                    // Active once, stopped (or failed) since: show both.
+                    if let Some(ti) = u.t_inactive.filter(|&ti| ti > t) {
+                        let state = if state == UnitState::Failed { state } else { UnitState::Inactive };
+                        self.events.push(Event { t: ti, unit: u.name.clone(), state });
+                    }
                     self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Active })
                 }
                 (None, UnitState::Failed) => {
@@ -251,4 +259,8 @@ impl BootTimeline {
         }
         self.events.push(ev);
     }
+}
+
+fn is_zero(v: &Usec) -> bool {
+    *v == 0
 }

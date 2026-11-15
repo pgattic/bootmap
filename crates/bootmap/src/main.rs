@@ -118,6 +118,13 @@ enum Cmd {
         /// Replay a recording instead of watching systemd (for testing on a VT).
         #[arg(long)]
         replay: Option<PathBuf>,
+        /// Follow a shutdown instead of a boot: take the display back and show
+        /// units stopping until systemd hands over to the final shutdown stage.
+        #[arg(long)]
+        shutdown: bool,
+        /// Virtual terminal the shutdown view switches to.
+        #[arg(long, default_value_t = 12)]
+        shutdown_vt: u32,
         /// File created once the display is released (on SIGUSR1).
         #[arg(long, default_value = "/run/bootmap/released")]
         released_marker: PathBuf,
@@ -176,14 +183,14 @@ fn main() -> Result<()> {
             window::run(source, graph)?;
         }
         #[cfg(feature = "drm")]
-        Cmd::Boot { record, hold, replay, released_marker, graph } => {
+        Cmd::Boot { record, hold, replay, shutdown, shutdown_vt, released_marker, graph } => {
             // Before anything slow: an early SIGUSR1 would otherwise kill us.
             let sig = kms::Signals::install()?;
             let source = match replay {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, 1.0),
                 None => live::Source::live()?,
             };
-            kms::run(sig, source, graph, record, hold, released_marker)?;
+            kms::run(sig, source, graph, record, hold, released_marker, shutdown.then_some(shutdown_vt))?;
         }
     }
     Ok(())

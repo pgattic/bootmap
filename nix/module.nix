@@ -83,6 +83,15 @@ in
       description = "Draw *.device units too (there are many).";
     };
 
+    showShutdown = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Also show the graph while shutting down or rebooting: units fade out as
+        they stop, and the ones holding up the shutdown are listed.
+      '';
+    };
+
     showProcesses = mkOption {
       type = types.bool;
       default = true;
@@ -135,6 +144,23 @@ in
         # Never get in the way of the boot.
         Nice = 5;
         OOMScoreAdjust = 500;
+      };
+    };
+
+    # Shutdown view. Pulled in by shutdown.target and, having no default
+    # dependencies or conflicts, it runs until the final killing spree. It takes
+    # the display back by switching to its own VT, which makes a running
+    # compositor drop DRM master.
+    systemd.services.bootmap-shutdown = mkIf cfg.showShutdown {
+      description = "Graphical shutdown visualizer";
+      unitConfig.DefaultDependencies = false;
+      wantedBy = [ "shutdown.target" ];
+      # Lets the boot instance (stopped by shutdown.target) release the display first.
+      after = [ "bootmap.service" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${lib.getExe cfg.package} boot --shutdown ${args}";
+        Restart = "no";
       };
     };
 

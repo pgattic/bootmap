@@ -77,7 +77,7 @@ used by the layout and physics tests.
 
 ```nix
 {
-  inputs.bootmap.url = "path:/home/pgattic/git/bootmap";  # or a git URL
+  inputs.bootmap.url = "github:pgattic/bootmap";
   outputs = { nixpkgs, bootmap, ... }: {
     nixosConfigurations.host = nixpkgs.lib.nixosSystem {
       modules = [
@@ -108,8 +108,15 @@ has. bootmap then keeps recording off-screen until the boot finishes, so the
 saved timeline is complete. With `handoverUnits = [ ]` it keeps drawing and
 exits `holdSeconds` after the boot finishes instead.
 
+At shutdown or reboot, `bootmap-shutdown.service` (pulled in by
+`shutdown.target`) brings the graph back. It switches to its own virtual
+terminal, which makes a running compositor let go of the display, then shows
+units fading out as they stop and lists the ones holding the shutdown up. It
+runs until systemd hands over to the final shutdown stage. Disable it with
+`showShutdown = false`.
+
 Options: `enable`, `package`, `layout` (`force`/`radial`), `radialPull`,
-`holdSeconds`, `handoverUnits`, `showDevices`,
+`holdSeconds`, `handoverUnits`, `showShutdown`, `showDevices`,
 `showProcesses`, `recordPath`, `quietKernel` (adds `quiet loglevel=3`). Plymouth
 must be disabled (asserted).
 
@@ -120,10 +127,12 @@ nix develop -c cargo test                     # layout tests on the sample boot
 nix build .#checks.aarch64-linux.vm -L        # boots a NixOS VM with the module
 ```
 
-The VM test checks that bootmap draws on `/dev/dri/card0` during boot, saves a
-recording with the finish timestamp, and exits. It also leaves
-`bootmap-during-boot.png` (a QEMU screenshot of the live graph) and
-`final.png` in `result/`.
+The VM test boots two machines. One has no login screen and checks that
+bootmap draws during boot and saves a complete recording. The other runs a
+Wayland compositor as its greeter and checks the handover to it, and that the
+shutdown view takes the display back from it. It leaves QEMU screenshots in
+`result/`: `bootmap-during-boot.png`, `greeter.png` and `shutdown.png`, plus
+`final.png`, a render of the finished recording.
 
 ## Notes on systemd's private socket
 
@@ -131,9 +140,11 @@ Two quirks found while testing, as of systemd 262:
 
 - PID 1 stamps messages with the sender `org.freedesktop.systemd1`, which is not
   a unique name. zbus asserts on that, so bootmap uses libdbus (the `dbus` crate).
-- `ListUnits` and `GetAll` on the Manager never get a reply over the private
-  socket, while `ListUnitsByPatterns([], [])` and per-property `Get` work. This
-  happens with sd-bus's `busctl` too.
+- A short first message on a new connection can go unanswered. libdbus sends
+  it right after `BEGIN`; sd-bus in PID 1 reads up to 256 bytes while
+  authenticating, and a message swallowed by that read is not processed until
+  more input arrives. It happens mostly while PID 1 is busy, which is exactly
+  when bootmap connects. bootmap therefore opens with a deliberately long call.
 
 ## Layout
 

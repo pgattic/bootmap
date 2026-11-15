@@ -47,6 +47,8 @@ pub enum Visual {
     /// Ran and exited (oneshot) or was stopped again.
     Exited,
     Failed,
+    /// Being stopped (shutdown).
+    Stopping,
 }
 
 
@@ -154,7 +156,7 @@ fn polar(x: f32, y: f32) -> (f32, f32) {
 
 fn label_color(v: Visual, is_target: bool) -> Rgb {
     match v {
-        Visual::Activating => ACTIVATING,
+        Visual::Activating | Visual::Stopping => ACTIVATING,
         Visual::Failed => FAILED,
         _ if is_target => TARGET,
         Visual::Exited | Visual::Ghost => MUTED,
@@ -169,11 +171,14 @@ pub struct RenderOptions {
     pub hud: bool,
     /// Title shown in the HUD (defaults to the host name).
     pub title: Option<String>,
+    /// Shutdown view: when the shutdown began. Units that stop after this
+    /// fade out instead of showing as "exited", and the HUD counts down.
+    pub shutdown_from: Option<Usec>,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { extra_edges: true, labels: true, hud: true, title: None }
+        Self { extra_edges: true, labels: true, hud: true, title: None, shutdown_from: None }
     }
 }
 
@@ -183,19 +188,21 @@ pub struct Renderer {
     pub opts: RenderOptions,
 }
 
-/// Unit visual states at time `t`.
-pub fn visuals_at(tl: &BootTimeline, t: Usec) -> HashMap<&str, Visual> {
+/// Unit visual states at time `t`. With `shutdown_from`, units that stop at
+/// or after that time fade back to `Ghost` instead of showing as `Exited`.
+pub fn visuals_at(tl: &BootTimeline, t: Usec, shutdown_from: Option<Usec>) -> HashMap<&str, Visual> {
     let mut m: HashMap<&str, Visual> =
         tl.units.keys().map(|k| (k.as_str(), Visual::Ghost)).collect();
     for e in tl.events.iter().take_while(|e| e.t <= t) {
+        let started = !matches!(m.get(e.unit.as_str()), Some(Visual::Ghost) | None);
         let v = match e.state {
             UnitState::Activating => Visual::Activating,
             UnitState::Active => Visual::Active,
             UnitState::Failed => Visual::Failed,
-            UnitState::Inactive | UnitState::Deactivating => match m.get(e.unit.as_str()) {
-                Some(Visual::Ghost) | None => Visual::Ghost,
-                _ => Visual::Exited,
-            },
+            _ if !started => Visual::Ghost,
+            UnitState::Deactivating => Visual::Stopping,
+            _ if shutdown_from.is_some_and(|s| e.t >= s) => Visual::Ghost,
+            _ => Visual::Exited,
         };
         m.insert(e.unit.as_str(), v);
     }
@@ -257,7 +264,7 @@ impl Renderer {
     pub fn render(&mut self, pm: &mut Pixmap, f: &Frame, tl: &BootTimeline, t: Usec, wall: f32) {
         let (w, h) = (pm.width() as f32, pm.height() as f32);
         pm.fill(color(BG, 1.0));
-        let vis = visuals_at(tl, t);
+        let vis = visuals_at(tl, t, self.opts.shutdown_from);
         let lay = f.lay;
         let cam = f.cam;
         let px = |i: usize| -> (f32, f32) {
@@ -359,7 +366,7 @@ impl Renderer {
         for ((key, fkey), pb) in groups {
             let (c, a, wdt) = match key {
                 k if k == Visual::Ghost as u8 => (GHOST, 0.35, 0.7),
-                k if k == Visual::Activating as u8 => (ACTIVATING, 0.8, 1.4),
+                k if k == Visual::Activating as u8 || k == Visual::Stopping as u8 => (ACTIVATING, 0.8, 1.4),
                 k if k == Visual::Active as u8 => (ACTIVE, 0.45, 1.1),
                 k if k == Visual::Exited as u8 => (EXITED, 0.4, 1.0),
                 _ => (FAILED, 0.8, 1.4),
@@ -377,7 +384,7 @@ impl Renderer {
 
         // Processes: tiny satellites on running units.
         for (pi, p) in lay.procs.iter().enumerate() {
-            if !matches!(node_vis(p.unit), Visual::Active | Visual::Activating) {
+            if !matches!(node_vis(p.unit), Visual::Active | Visual::Activating | Visual::Stopping) {
                 continue;
             }
             let (x0, y0) = px(p.unit);
@@ -426,7 +433,7 @@ impl Renderer {
             };
             let (c, a, rad) = match v {
                 Visual::Ghost => (GHOST, 0.8, base * 0.6),
-                Visual::Activating => (ACTIVATING, 1.0, base * (1.0 + 0.35 * pulse)),
+                Visual::Activating | Visual::Stopping => (ACTIVATING, 1.0, base * (1.0 + 0.35 * pulse)),
                 Visual::Active if is_target => (TARGET, 1.0, base),
                 Visual::Active => (ACTIVE, 1.0, base),
                 Visual::Exited => (EXITED, 0.9, base * 0.85),
@@ -434,7 +441,7 @@ impl Renderer {
             };
             radii[i] = rad;
             let a = a * dim(i);
-            if v == Visual::Activating {
+            if matches!(v, Visual::Activating | Visual::Stopping) {
                 if let Some(halo) = PathBuilder::from_circle(x, y, rad * 2.6) {
                     pm.fill_path(&halo, &paint(c, 0.18 * (0.4 + pulse) * dim(i)), FillRule::Winding, Transform::identity(), None);
                 }
@@ -473,7 +480,10 @@ impl Renderer {
         }
 
         if self.opts.hud {
-            self.hud(pm, lay, tl, t, &vis);
+            match self.opts.shutdown_from {
+                Some(from) => self.hud_shutdown(pm, lay, tl, t, &vis, from),
+                None => self.hud(pm, lay, tl, t, &vis),
+            }
             if let Some(hv) = f.hover {
                 self.info_panel(pm, lay, tl, hv, node_vis(hv), t);
             }
@@ -506,7 +516,7 @@ impl Renderer {
             let (r, theta) = polar(x - ox, y - oy);
             let arc = (n.wedge.1 - n.wedge.0) * r;
             let is_target = n.kind == Some(UnitKind::Target);
-            let room = arc >= px * 0.95 || (is_target && arc >= px * 0.6) || v == Visual::Activating || f.hover.is_some();
+            let room = arc >= px * 0.95 || (is_target && arc >= px * 0.6) || matches!(v, Visual::Activating | Visual::Stopping) || f.hover.is_some();
             let leaf = n.children.is_empty();
             if !room || !(leaf || is_target || v != Visual::Active || f.hover.is_some()) {
                 continue;
@@ -552,7 +562,7 @@ impl Renderer {
             if v == Visual::Failed {
                 p += 3000;
             }
-            if v == Visual::Activating {
+            if matches!(v, Visual::Activating | Visual::Stopping) {
                 p += 4000;
             }
             if in_focus == Some(true) {
@@ -603,6 +613,7 @@ impl Renderer {
             let state = match v {
                 Visual::Ghost => "pending",
                 Visual::Activating => "activating",
+                Visual::Stopping => "stopping",
                 Visual::Active => "active",
                 Visual::Exited => "exited",
                 Visual::Failed => "failed",
@@ -642,6 +653,90 @@ impl Renderer {
         for (s, c) in lines {
             self.draw_text(pm, &s, bx + 14.0, y, small, c);
             y += line;
+        }
+    }
+
+    /// HUD for the shutdown view: what is still running and what is holding it up.
+    fn hud_shutdown(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, t: Usec, vis: &HashMap<&str, Visual>, from: Usec) {
+        let (w, h) = (pm.width() as f32, pm.height() as f32);
+        let big = (h / 40.0).clamp(14.0, 28.0);
+        let small = (big * 0.62).max(10.0);
+        let line = small * 1.45;
+        let x = 18.0;
+        let mut y = 18.0 + big;
+
+        let title = self.opts.title.clone().unwrap_or_else(|| {
+            if tl.host.is_empty() { "bootmap".into() } else { format!("bootmap · {}", tl.host) }
+        });
+        self.draw_text(pm, &title, x, y, big, TEXT);
+        y += big * 1.25;
+        // Which shutdown is it? The target with a queued job tells us.
+        let queued = |name: &str| tl.units.get(name).is_some_and(|u| u.job || u.state == UnitState::Active);
+        let what = if queued("reboot.target") || queued("kexec.target") || queued("soft-reboot.target") {
+            "rebooting"
+        } else if queued("poweroff.target") {
+            "powering off"
+        } else if queued("halt.target") {
+            "halting"
+        } else {
+            "shutting down"
+        };
+        let status = format!("{what} +{:.1}s", t.saturating_sub(from) as f32 / 1e6);
+        self.draw_text(pm, &status, x, y, small * 1.15, ACTIVATING);
+        y += line * 1.2;
+
+        let count = |want: &[Visual]| {
+            lay.nodes.iter().skip(1).filter(|n| vis.get(n.name.as_str()).is_some_and(|v| want.contains(v))).count()
+        };
+        let running = count(&[Visual::Active, Visual::Activating]);
+        let stopping = count(&[Visual::Stopping]);
+        let total = lay.nodes.len() - 1;
+        for (label, n, c) in [
+            ("running", running, ACTIVE),
+            ("stopping", stopping, ACTIVATING),
+            ("stopped", total - running - stopping, GHOST),
+        ] {
+            if let Some(d) = PathBuilder::from_circle(x + 4.0, y - small * 0.35, 4.0) {
+                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+            self.draw_text(pm, &format!("{n:>4}  {label}"), x + 14.0, y, small, TEXT);
+            y += line;
+        }
+
+        // Units being stopped right now, longest-waiting first.
+        if stopping > 0 {
+            y += line * 0.5;
+            self.draw_text(pm, "stopping", x, y, small, MUTED);
+            y += line;
+            let mut since: HashMap<&str, Usec> = HashMap::new();
+            for e in tl.events.iter().filter(|e| e.state == UnitState::Deactivating && e.t <= t) {
+                since.insert(e.unit.as_str(), e.t);
+            }
+            let mut ing: Vec<(&str, Usec)> = lay
+                .nodes
+                .iter()
+                .skip(1)
+                .filter(|n| vis.get(n.name.as_str()) == Some(&Visual::Stopping))
+                .filter_map(|n| Some((n.name.as_str(), *since.get(n.name.as_str())?)))
+                .collect();
+            ing.sort_by_key(|(_, a)| *a);
+            for (name, a) in ing.iter().take(8) {
+                let s = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
+                self.draw_text(pm, &s, x, y, small, ACTIVATING);
+                y += line;
+            }
+        }
+
+        // Legend, top right.
+        let mut ly = 18.0 + small;
+        for (label, c) in [("target", TARGET), ("running", ACTIVE), ("stopping", ACTIVATING), ("stopped", GHOST), ("process", PROC)] {
+            let tw = self.text(label, small, MUTED).map(|p| p.width() as f32).unwrap_or(0.0);
+            let lx = w - 18.0 - tw;
+            self.draw_text(pm, label, lx, ly, small, MUTED);
+            if let Some(d) = PathBuilder::from_circle(lx - 10.0, ly - small * 0.35, 3.5) {
+                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+            ly += line;
         }
     }
 

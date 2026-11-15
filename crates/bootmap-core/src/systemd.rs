@@ -60,6 +60,7 @@ pub struct Systemd {
     conn: Connection,
     p2p: bool,
     path_to_name: HashMap<String, String>,
+    subscribed: bool,
 }
 
 impl Systemd {
@@ -71,13 +72,32 @@ impl Systemd {
             }
         }
         let conn = Connection::new_system().context("connecting to the system bus")?;
-        Ok(Self { conn, p2p: false, path_to_name: HashMap::new() })
+        Ok(Self { conn, p2p: false, path_to_name: HashMap::new(), subscribed: false })
     }
 
     fn connect_private() -> Result<Self> {
         // Peer-to-peer: no Hello / register().
         let ch = Channel::open_private(&format!("unix:path={PRIVATE_SOCKET}"))?;
-        Ok(Self { conn: Connection::from(ch), p2p: true, path_to_name: HashMap::new() })
+        let sd = Self { conn: Connection::from(ch), p2p: true, path_to_name: HashMap::new(), subscribed: false };
+        sd.prime();
+        Ok(sd)
+    }
+
+    /// Make the first message on the connection a long one.
+    ///
+    /// libdbus sends `BEGIN` and then the first message without waiting for an
+    /// answer. sd-bus, on PID 1's side, reads up to 256 bytes at a time while
+    /// authenticating; if a short first message arrives in the same read as
+    /// `BEGIN`, it stays in sd-bus's buffer unprocessed until more input
+    /// arrives, so the call gets no reply (seen with systemd 262, most often
+    /// while PID 1 is busy, i.e. during boot). A message longer than that
+    /// read leaves bytes in the socket, which wakes PID 1 up again. The call
+    /// itself just fails with "no such unit".
+    fn prime(&self) {
+        debug("prime");
+        let name = format!("{}.service", "bootmap-primer-".repeat(24));
+        let _: std::result::Result<(DPath<'static>,), _> =
+            self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "GetUnit", (name,));
     }
 
     pub fn is_private(&self) -> bool {
@@ -89,29 +109,34 @@ impl Systemd {
     }
 
     fn get_all(&self, path: &str, iface: &str) -> Result<PropMap> {
-        if std::env::var_os("BOOTMAP_DEBUG").is_some() {
-            eprintln!("bootmap: GetAll {path} {iface}");
+        {
+            debug(&format!("GetAll {path} {iface}"));
         }
         Ok(self.proxy(path).get_all(iface)?)
     }
 
-    /// Boot phase timestamps. Read one property at a time: on PID 1's private
-    /// socket, `GetAll` on the Manager never gets a reply (systemd 262).
+    /// Boot phase timestamps, one small property at a time (`GetAll` on the
+    /// Manager would return hundreds of properties we do not need).
     pub fn phases(&self) -> Result<Phases> {
         let proxy = self.proxy(MANAGER_PATH);
-        let get = |k: &str| -> Result<u64> { Ok(proxy.get::<u64>(MANAGER_IFACE, k)?) };
+        let get = |k: &str| -> Result<u64> {
+            debug(&format!("Get {k}"));
+            Ok(proxy.get::<u64>(MANAGER_IFACE, k)?)
+        };
         Ok(Phases {
             firmware: get("FirmwareTimestampMonotonic")?,
             loader: get("LoaderTimestampMonotonic")?,
             initrd: get("InitRDTimestampMonotonic")?,
             userspace: get("UserspaceTimestampMonotonic")?,
             finish: get("FinishTimestampMonotonic")?,
+            // Newer systemd only; absent means "not shutting down".
+            shutdown_start: get("ShutdownStartTimestampMonotonic").unwrap_or(0),
         })
     }
 
     fn list_units(&self) -> Result<Vec<ListUnitsRow>> {
-        // Empty state and pattern lists mean "all loaded units". Plain
-        // `ListUnits` gets no reply on the private socket (systemd 262).
+        // Empty state and pattern lists mean "all loaded units".
+        debug("ListUnitsByPatterns");
         let none: Vec<&str> = vec![];
         let (rows,): (Vec<ListUnitsRow>,) =
             self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "ListUnitsByPatterns", (none.clone(), none))?;
@@ -132,9 +157,10 @@ impl Systemd {
         };
         u.t_activating = nonzero(get_u64(&p, "InactiveExitTimestampMonotonic"));
         u.t_active = nonzero(get_u64(&p, "ActiveEnterTimestampMonotonic"));
-        if u.t_active.is_none() && matches!(u.state, UnitState::Inactive | UnitState::Failed) {
+        if matches!(u.state, UnitState::Inactive | UnitState::Failed) {
             let t = nonzero(get_u64(&p, "InactiveEnterTimestampMonotonic"));
-            u.t_inactive = t.filter(|&t| u.t_activating.is_some_and(|a| t >= a));
+            // Only if it stopped after its latest start (not a restart in progress).
+            u.t_inactive = t.filter(|&t| u.t_activating.is_some_and(|a| t >= a) && u.t_active.is_none_or(|a| t >= a));
         }
         if let Some(iface) = cgroup_iface(u.kind) {
             if let Ok(sp) = self.get_all(path, iface) {
@@ -156,8 +182,28 @@ impl Systemd {
         Some(u)
     }
 
+    /// Ask PID 1 to send us change signals (idempotent).
+    fn subscribe(&mut self) -> Result<()> {
+        if self.subscribed {
+            return Ok(());
+        }
+        debug("Subscribe");
+        let _: () = self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "Subscribe", ())?;
+        if !self.p2p {
+            let mut rule = MatchRule::new();
+            rule.msg_type = Some(MessageType::Signal);
+            rule.sender = Some(DEST.into());
+            self.conn.add_match_no_cb(&rule.match_str())?;
+        }
+        self.subscribed = true;
+        Ok(())
+    }
+
     /// Snapshot every loaded unit. Events are synthesized from timestamps.
     pub fn snapshot(&mut self) -> Result<BootTimeline> {
+        // Subscribe first: changes that happen while we read the units are
+        // then queued for `watch()` instead of being lost.
+        self.subscribe()?;
         let mut tl = BootTimeline {
             host: read_trim("/proc/sys/kernel/hostname"),
             boot_id: read_trim("/proc/sys/kernel/random/boot_id").replace('-', ""),
@@ -182,12 +228,11 @@ impl Systemd {
     /// Subscribe and stream changes until the connection closes or `send`
     /// returns false. Blocks. Call `snapshot()` first.
     pub fn watch(&mut self, mut send: impl FnMut(LiveMsg) -> bool) -> Result<()> {
-        let _: () = self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "Subscribe", ())?;
+        self.subscribe()?;
         let mut rule = MatchRule::new();
         rule.msg_type = Some(MessageType::Signal);
         if !self.p2p {
             rule.sender = Some(DEST.into());
-            self.conn.add_match_no_cb(&rule.match_str())?;
         }
         // Signals are queued here by the callback and handled after process()
         // returns, so handlers are free to make method calls.
@@ -349,4 +394,11 @@ fn get_str(p: &PropMap, k: &str) -> String {
 
 fn get_strv(p: &PropMap, k: &str) -> Vec<String> {
     prop_cast::<Vec<String>>(p, k).cloned().unwrap_or_default()
+}
+
+/// Trace D-Bus calls when BOOTMAP_DEBUG is set.
+fn debug(what: &str) {
+    if std::env::var_os("BOOTMAP_DEBUG").is_some() {
+        eprintln!("bootmap: [{:.3}] {what}", monotonic_now() as f64 / 1e6);
+    }
 }

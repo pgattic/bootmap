@@ -16,23 +16,44 @@ pkgs.testers.runNixOSTest {
         environment.systemPackages = [ pkgs.jq ];
       };
 
-    # A real greeter with the default handover: the greeter must start (it
-    # used to be dropped from the boot transaction), only after bootmap has
-    # released the display, and the recording must still be complete.
+    # A real graphical greeter (a Wayland compositor holding DRM master) with
+    # the default handover:
+    # - the greeter must start (it used to be dropped from the boot
+    #   transaction), and only after bootmap has released the display;
+    # - the recording must still be complete;
+    # - at shutdown, bootmap must take the display back from the compositor.
     greeter =
       { pkgs, lib, ... }:
       {
         imports = [ self.nixosModules.default ];
         services.bootmap.enable = true;
+        hardware.graphics.enable = true;
+        fonts.packages = [ pkgs.dejavu_fonts ];
         services.greetd = {
           enable = true;
-          settings.default_session.command = "${lib.getExe' pkgs.greetd "agreety"} --cmd ${pkgs.bashInteractive}/bin/bash";
+          settings.default_session.command = "${pkgs.writeShellScript "greeter" ''
+            export WLR_RENDERER=pixman
+            # The greeter user has no login shell, so give foot one to run.
+            exec ${lib.getExe pkgs.cage} -s -- ${lib.getExe pkgs.foot} ${pkgs.bashInteractive}/bin/bash >/tmp/greeter.log 2>&1
+          ''}";
+        };
+        # Holds the shutdown up long enough to look at it.
+        systemd.services.slow-stop = {
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.coreutils}/bin/true";
+            ExecStop = "${pkgs.coreutils}/bin/sleep 6";
+          };
         };
         environment.systemPackages = [ pkgs.jq ];
       };
   };
 
   testScript = ''
+    import time
+
     start_all()
 
     with subtest("held: draws during boot, records, exits after hold"):
@@ -64,7 +85,16 @@ pkgs.testers.runNixOSTest {
         greeter.wait_until_succeeds("jq -e '.phases.finish > 0' /var/log/bootmap/last.json", timeout=60)
         greeter.succeed("jq -e '.units[\"greetd.service\"].t_active > 0' /var/log/bootmap/last.json")
         greeter.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
-        greeter.sleep(2)
+        greeter.wait_until_succeeds("pgrep cage && pgrep foot", timeout=60)
+        greeter.sleep(3)
         greeter.screenshot("greeter")
+
+    with subtest("greeter: shutdown view takes the display back from the compositor"):
+        # Detached and delayed: the test shell is itself stopped by the shutdown.
+        greeter.succeed("systemd-run --on-active=1 systemctl poweroff")
+        greeter.wait_for_console_text("bootmap: showing shutdown", timeout=30)
+        time.sleep(2.5)  # host-side: the guest shell is gone
+        greeter.screenshot("shutdown")
+        greeter.wait_for_shutdown()
   '';
 }
