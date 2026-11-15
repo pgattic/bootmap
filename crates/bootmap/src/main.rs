@@ -118,6 +118,9 @@ enum Cmd {
         /// Replay a recording instead of watching systemd (for testing on a VT).
         #[arg(long)]
         replay: Option<PathBuf>,
+        /// File created once the display is released (on SIGUSR1).
+        #[arg(long, default_value = "/run/bootmap/released")]
+        released_marker: PathBuf,
         #[command(flatten)]
         graph: GraphArgs,
     },
@@ -173,12 +176,14 @@ fn main() -> Result<()> {
             window::run(source, graph)?;
         }
         #[cfg(feature = "drm")]
-        Cmd::Boot { record, hold, replay, graph } => {
+        Cmd::Boot { record, hold, replay, released_marker, graph } => {
+            // Before anything slow: an early SIGUSR1 would otherwise kill us.
+            let sig = kms::Signals::install()?;
             let source = match replay {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, 1.0),
                 None => live::Source::live()?,
             };
-            kms::run(source, graph, record, hold)?;
+            kms::run(sig, source, graph, record, hold, released_marker)?;
         }
     }
     Ok(())

@@ -51,8 +51,10 @@ in
         "autovt@tty1.service"
       ];
       description = ''
-        Units that need the display. Starting any of them stops bootmap first,
-        which restores the console and releases DRM master.
+        Units that need the display (login screens). Before any of them starts,
+        bootmap-quit.service makes bootmap release the display (restoring the
+        console and dropping DRM master). bootmap then keeps recording off-screen
+        until the boot finishes. Set to `[ ]` to keep drawing instead (see `holdSeconds`).
       '';
     };
 
@@ -121,18 +123,47 @@ in
       # itself, so it does not need udev either.
       unitConfig.DefaultDependencies = false;
       wantedBy = [ "sysinit.target" ];
-      # Conflicts= is symmetric: starting one of these stops bootmap. When a
-      # stop and a start are queued together, systemd runs the stop first.
-      conflicts = cfg.handoverUnits;
-      before = cfg.handoverUnits ++ [ "shutdown.target" ];
+      # Without default dependencies we must opt in to being stopped at shutdown.
+      conflicts = [ "shutdown.target" ];
+      before = [ "shutdown.target" ];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${lib.getExe cfg.package} boot ${args}";
         Restart = "no";
         TimeoutStopSec = "3s";
+        RuntimeDirectory = "bootmap";
         # Never get in the way of the boot.
         Nice = 5;
         OOMScoreAdjust = 500;
+      };
+    };
+
+    # Handover, like plymouth-quit: ordered before the login screen, this asks
+    # bootmap to give the display back (SIGUSR1) and waits until it has. bootmap
+    # keeps recording off-screen until the boot finishes.
+    #
+    # Deliberately not Conflicts= between bootmap and the greeter: both start
+    # jobs land in the same boot transaction, and systemd resolves the conflict
+    # by silently dropping the greeter's job.
+    systemd.services.bootmap-quit = mkIf (cfg.handoverUnits != [ ]) {
+      description = "Hand the display from bootmap to the login screen";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "bootmap.service" ];
+      before = cfg.handoverUnits;
+      path = [ config.systemd.package pkgs.coreutils ];
+      script = ''
+        systemctl is-active --quiet bootmap.service || exit 0
+        systemctl kill --signal=SIGUSR1 --kill-whom=main bootmap.service
+        for _ in $(seq 50); do
+          [ -e /run/bootmap/released ] && exit 0
+          sleep 0.1
+        done
+        echo "bootmap did not release the display in time; stopping it"
+        systemctl stop bootmap.service
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
       };
     };
 

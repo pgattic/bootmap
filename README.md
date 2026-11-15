@@ -100,11 +100,13 @@ used by the layout and physics tests.
 When the boot finishes it saves the timeline to `/var/log/bootmap/last.json`,
 so you can replay it later with `bootmap view`.
 
-It keeps drawing until a unit in `services.bootmap.handoverUnits` starts. By
-default that list is the display manager and `getty@tty1`. The module sets
-`Conflicts=` on those units, so systemd stops bootmap, which restores the
-console, right before they start. Alternatively, set `holdSeconds` to exit a
-fixed time after boot finishes.
+It keeps drawing until just before the login screen starts (the units in
+`services.bootmap.handoverUnits`: by default the display manager and
+`getty@tty1`). At that point `bootmap-quit.service`, which works like
+`plymouth-quit`, signals bootmap to release the display and waits until it
+has. bootmap then keeps recording off-screen until the boot finishes, so the
+saved timeline is complete. With `handoverUnits = [ ]` it keeps drawing and
+exits `holdSeconds` after the boot finishes instead.
 
 Options: `enable`, `package`, `layout` (`force`/`radial`), `radialPull`,
 `holdSeconds`, `handoverUnits`, `showDevices`,

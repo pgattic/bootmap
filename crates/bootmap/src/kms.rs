@@ -7,7 +7,7 @@
 
 use crate::live::{Scene, Source};
 use crate::GraphArgs;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use drm::buffer::{Buffer, DrmFourcc};
 use drm::control::{connector, crtc, dumbbuffer::DumbBuffer, framebuffer, Device as ControlDevice, Mode};
 use drm::Device;
@@ -98,7 +98,8 @@ impl Output {
         // (the kernel wants num_clips and clips_ptr both zero or both set).
         let full = drm::control::ClipRect::new(0, 0, self.size.0.min(u16::MAX as u32) as u16, self.size.1.min(u16::MAX as u32) as u16);
         if let Err(e) = self.card.dirty_framebuffer(self.fb, &[full]) {
-            if !self.dirty_warned {
+            // ENOSYS: the driver scans out the buffer directly and needs no flush.
+            if !self.dirty_warned && e.raw_os_error() != Some(38) {
                 eprintln!("bootmap: dirty_framebuffer: {e}");
                 self.dirty_warned = true;
             }
@@ -137,8 +138,39 @@ fn preferred_mode(modes: &[Mode]) -> Mode {
         .unwrap_or(modes[0])
 }
 
-/// Try every card, preferring ones that are not simpledrm.
-fn open_any(deadline: Instant) -> Result<Output> {
+/// Signal flags. Installed first thing in `bootmap boot`: SIGUSR1's default
+/// action is to terminate, so it must be caught before anything slow runs.
+pub struct Signals {
+    /// SIGTERM/SIGINT: stop now.
+    stop: Arc<AtomicBool>,
+    /// SIGUSR1: give the display back, keep recording until the boot finishes.
+    release: Arc<AtomicBool>,
+}
+
+impl Signals {
+    pub fn install() -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+            signal_hook::flag::register(sig, stop.clone())?;
+        }
+        let release = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGUSR1, release.clone())?;
+        Ok(Self { stop, release })
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    fn released(&self) -> bool {
+        self.release.load(Ordering::Relaxed)
+    }
+}
+
+/// Try every card, preferring ones that are not simpledrm. Returns None if no
+/// display shows up before `deadline`, or if we are asked to stop or release
+/// while waiting (then there is nothing to draw on, but still a boot to record).
+fn open_any(deadline: Instant, sig: &Signals) -> Option<Output> {
     loop {
         let mut cards: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
             .map(|rd| {
@@ -151,12 +183,16 @@ fn open_any(deadline: Instant) -> Result<Output> {
         cards.sort_by_key(|p| (is_simpledrm(p), p.file_name().unwrap_or_default().len(), p.clone()));
         for c in &cards {
             match Output::open(c) {
-                Ok(o) => return Ok(o),
+                Ok(o) => return Some(o),
                 Err(e) => eprintln!("bootmap: {}: {e:#}", c.display()),
             }
         }
+        if sig.stopped() || sig.released() {
+            return None;
+        }
         if Instant::now() > deadline {
-            bail!("no usable display found");
+            eprintln!("bootmap: no usable display found; recording only");
+            return None;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -217,53 +253,83 @@ fn save(record: &Path, scene: &Scene) {
     }
 }
 
-pub fn run(source: Source, graph: GraphArgs, record: PathBuf, hold: f32) -> Result<()> {
-    let stop = Arc::new(AtomicBool::new(false));
-    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
-        signal_hook::flag::register(sig, stop.clone())?;
-    }
+/// How long to keep listening (off-screen) after releasing the display, for
+/// the rest of the boot to finish so the recording is complete.
+const RECORD_AFTER_RELEASE: Duration = Duration::from_secs(60);
+
+pub fn run(sig: Signals, source: Source, graph: GraphArgs, record: PathBuf, hold: f32, released_marker: PathBuf) -> Result<()> {
     let replay = matches!(source.mode, crate::live::Mode::Replay { .. });
     let mut scene = Scene::new(source, &graph);
-    let _vt = VtGraphics::enter();
-    let mut out = open_any(Instant::now() + Duration::from_secs(20))?;
+    let mut vt = Some(VtGraphics::enter());
+    let mut out = open_any(Instant::now() + Duration::from_secs(20), &sig);
     sd_notify("READY=1");
-    let mut pm = tiny_skia::Pixmap::new(out.size.0, out.size.1).context("pixmap")?;
+    let size = out.as_ref().map(|o| o.size).unwrap_or((1, 1));
+    let mut pm = tiny_skia::Pixmap::new(size.0, size.1).context("pixmap")?;
     let frame = Duration::from_millis(33);
     let mut saved = false;
     let mut last_check = Instant::now();
     let mut frames: u64 = 0;
+    let mut released_at: Option<Instant> = None;
 
-    while !stop.load(Ordering::Relaxed) {
+    while !sig.stopped() {
         let t0 = Instant::now();
-        scene.frame(&mut pm);
-        let res = out.present(&pm);
-        if frames == 0 {
-            eprintln!("bootmap: first frame in {:?} ({:?})", t0.elapsed(), res.as_ref().err());
+
+        if released_at.is_none() && sig.released() {
+            // Restore the console's CRTC, drop DRM master and leave graphics
+            // mode, then tell bootmap-quit the display is free.
+            drop(out.take());
+            drop(vt.take());
+            if let Some(dir) = released_marker.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&released_marker, b"");
+            eprintln!("bootmap: released display; recording until boot finishes");
+            released_at = Some(Instant::now());
         }
-        frames += 1;
-        let failed = res.is_err();
-        if failed || (last_check.elapsed() > Duration::from_millis(500) && out.gone()) {
-            // The device went away (simpledrm handed over to the real driver).
-            last_check = Instant::now();
-            drop(out);
-            out = open_any(Instant::now() + Duration::from_secs(10))?;
-            pm = tiny_skia::Pixmap::new(out.size.0, out.size.1).context("pixmap")?;
-            continue;
+
+        match &mut out {
+            Some(o) => {
+                scene.frame(&mut pm);
+                let res = o.present(&pm);
+                if frames == 0 {
+                    eprintln!("bootmap: first frame in {:?} ({:?})", t0.elapsed(), res.as_ref().err());
+                }
+                frames += 1;
+                if res.is_err() || (last_check.elapsed() > Duration::from_millis(500) && o.gone()) {
+                    // The device went away (simpledrm handed over to the real driver).
+                    last_check = Instant::now();
+                    drop(out.take());
+                    let Some(o) = open_any(Instant::now() + Duration::from_secs(10), &sig) else { continue };
+                    pm = tiny_skia::Pixmap::new(o.size.0, o.size.1).context("pixmap")?;
+                    out = Some(o);
+                    continue;
+                }
+            }
+            None => {
+                // Headless: just keep collecting events.
+                scene.source.poll();
+            }
         }
+
         if let Some(done) = scene.source.finished_for() {
             if !saved && !replay {
                 save(&record, &scene);
                 saved = true;
             }
-            if hold > 0.0 && done >= hold {
+            // Done once released or headless (nothing left to show), or after the hold.
+            if released_at.is_some() || out.is_none() || (hold > 0.0 && done >= hold) {
                 break;
             }
+        }
+        if released_at.is_some_and(|t| t.elapsed() > RECORD_AFTER_RELEASE) {
+            break;
         }
         if let crate::live::Mode::Live { disconnected: true, .. } = scene.source.mode {
             // PID 1 went away (shutdown/switch-root); nothing more to show.
             break;
         }
-        std::thread::sleep(frame.saturating_sub(t0.elapsed()));
+        let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
+        std::thread::sleep(pace.saturating_sub(t0.elapsed()));
     }
     if !saved && !replay {
         save(&record, &scene);
