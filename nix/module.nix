@@ -18,6 +18,8 @@ let
     record = cfg.recordPath;
     hold = cfg.holdSeconds;
     devices = cfg.showDevices;
+    layout = cfg.layout;
+    radial = cfg.radialPull;
     no-processes = !cfg.showProcesses;
   };
 in
@@ -52,6 +54,25 @@ in
         Units that need the display. Starting any of them stops bootmap first,
         which restores the console and releases DRM master.
       '';
+    };
+
+    layout = mkOption {
+      type = types.enum [
+        "force"
+        "radial"
+      ];
+      default = "force";
+      description = ''
+        `force`: a physics-based, Obsidian-like graph where units float and
+        settle, with a soft pull toward their dependency depth.
+        `radial`: a rigid radial tree where distance from the center is exactly dependency depth.
+      '';
+    };
+
+    radialPull = mkOption {
+      type = types.numbers.between 0 1;
+      default = 0.5;
+      description = "Force layout only: how strongly units are pulled toward their dependency-depth ring (0 = free, 1 = close to rings).";
     };
 
     showDevices = mkOption {

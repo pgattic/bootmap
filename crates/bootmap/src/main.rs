@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
-use bootmap_core::render::RenderOptions;
+use bootmap_core::render::{RenderOptions, Style};
 use bootmap_core::systemd::{LiveMsg, Systemd};
-use bootmap_core::{BootTimeline, Layout, LayoutOptions, Renderer, UnitKind};
+use bootmap_core::{BootTimeline, LayoutOptions, UnitKind};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -36,6 +36,12 @@ pub struct GraphArgs {
     /// Hide faint non-tree dependency edges.
     #[arg(long)]
     no_extra_edges: bool,
+    /// Layout: "force" (physics, Obsidian-like) or "radial" (rigid rings).
+    #[arg(long, default_value = "force", value_parser = ["force", "radial"])]
+    layout: String,
+    /// Force layout: pull toward each unit's dependency-depth ring (0 = free, 1 = near rings).
+    #[arg(long, default_value_t = 0.5)]
+    pub radial: f32,
 }
 
 impl GraphArgs {
@@ -51,6 +57,13 @@ impl GraphArgs {
         o.include_never_started = self.all;
         o.processes = !self.no_processes;
         o
+    }
+    pub fn style(&self) -> Style {
+        if self.layout == "radial" {
+            Style::Radial
+        } else {
+            Style::Force
+        }
     }
     pub fn render_options(&self) -> RenderOptions {
         RenderOptions { extra_edges: !self.no_extra_edges, ..Default::default() }
@@ -75,6 +88,9 @@ enum Cmd {
         at: String,
         #[arg(short, long, default_value = "bootmap.png")]
         output: PathBuf,
+        /// Highlight a unit and its neighbors, as when hovering it in the viewer.
+        #[arg(long)]
+        highlight: Option<String>,
         #[arg(long, default_value = "1920x1080")]
         size: String,
         #[command(flatten)]
@@ -128,15 +144,17 @@ fn main() -> Result<()> {
                 None => println!("{}", tl.to_json()),
             }
         }
-        Cmd::Render { input, at, output, size, graph } => {
+        Cmd::Render { input, at, output, size, highlight, graph } => {
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let t = parse_at(&tl, &at)?;
-            let lay = Layout::compute(&tl, &graph.layout_options());
-            let mut r = Renderer::new(graph.render_options());
+            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph);
+            scene.settle();
+            scene.hover = highlight;
             let mut pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
-            r.render(&mut pm, &lay, &tl, t, 0.25);
+            scene.draw_at(&mut pm, t);
             pm.save_png(&output)?;
+            let lay = &scene.layout;
             eprintln!("wrote {} ({} nodes, depth {})", output.display(), lay.nodes.len() - 1, lay.max_depth);
         }
         #[cfg(feature = "window")]

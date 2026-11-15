@@ -1,19 +1,42 @@
 # bootmap
 
-A graphical systemd boot visualizer. It draws the boot as a radial graph with
-the system at the center and units growing outward along their dependency
-chains, with their processes as small satellites around them. Units light up
-as they start. It is inspired by [bootvine](https://codeberg.org/wvhulle/bootvine),
-which shows the same idea as a TUI tree.
+A graphical systemd boot visualizer. It draws the boot as a living graph, in
+the spirit of Obsidian's graph view: the system sits at the center, units
+float around it connected by their dependencies, and processes orbit their
+units. Units light up as they start. It is inspired by
+[bootvine](https://codeberg.org/wvhulle/bootvine), which shows the same idea as
+a TUI tree.
 
-- **Radius = dependency depth.** A unit's parent is its critical-chain
-  predecessor: the `After=` dependency that finished starting last before it
-  (the same rule `systemd-analyze critical-chain` uses). Rings are spaced
-  sub-linearly so the busy inner rings get more room.
-- **Angle = subtree.** Each subtree gets a wedge, so related units share a
-  sector. Faint chords show the remaining `Requires=`/`Wants=`/`BindsTo=` edges.
-- **Color = state:** grey pending, amber activating (pulsing), green active,
-  blue targets, hollow teal exited (oneshots), red failed, violet processes.
+## Layouts
+
+**`force`** (default) is a physics simulation:
+
+- units repel each other;
+- dependency edges act as springs;
+- weak gravity holds the graph together;
+- a soft **radial pull** nudges each unit toward the ring of its dependency depth.
+
+`--radial 0` lets the graph float freely. `--radial 1` keeps it close to
+rings, so early units stay near the center and `graphical.target` drifts
+outward. The simulation starts from the radial layout, so it settles in a
+couple of seconds and comes out the same every time. When new units appear
+during a live boot, they spawn next to their parent and drift into place.
+Nodes are sized by how many connections they have.
+
+**`radial`** is a rigid radial tree where distance from the center is exactly
+the dependency depth. Each unit's parent is its critical-chain predecessor:
+the `After=` dependency that finished starting last before it (the rule
+`systemd-analyze critical-chain` uses). Each subtree gets its own wedge.
+
+In both layouts, colors show state:
+
+- grey: pending
+- amber: activating (pulsing)
+- green: active
+- blue: targets
+- hollow teal: exited (oneshots)
+- red: failed
+- violet: processes
 
 ## Usage
 
@@ -23,14 +46,32 @@ cargo run -- capture -o boot.json             # snapshot this boot's timeline
 cargo run -- view samples/mbair-boot.json     # replay in a window
 cargo run -- view                             # watch systemd live
 cargo run -- render boot.json --at 1.5 -o f.png   # headless frame (seconds after userspace start, or "end")
+cargo run -- render boot.json --highlight basic.target -o f.png   # as if hovering a unit
 ```
 
-Viewer keys: `space` pause, `←`/`→` scrub, `r` restart, `l` labels, `e` extra edges, `q` quit.
-Graph flags: `--devices`, `--slices`, `--all` (include never-started units),
-`--no-processes`, `--no-extra-edges`.
+In the viewer:
+
+| Input | Action |
+|---|---|
+| hover | highlight a unit and its neighbors; details panel |
+| drag a unit | move it (force layout); it rejoins the physics on release |
+| drag background / scroll | pan / zoom at cursor |
+| `f` or `0` | fit the graph to the window again |
+| `m` | switch between force and radial layouts |
+| `[` / `]` | weaken / strengthen the radial pull |
+| `space`, `←`/`→`, `r` | pause, scrub, restart the replay |
+| `l`, `e` | toggle labels, toggle extra dependency edges |
+| `q` / `Esc` | quit |
+
+Graph flags:
+
+- `--layout force|radial` and `--radial <0..1>`
+- `--devices` and `--slices` to also show those unit types
+- `--all` to include units that never started
+- `--no-processes` and `--no-extra-edges`
 
 `samples/mbair-boot.json` is a real boot (NixOS on Apple Silicon, 384 units)
-used by the layout tests.
+used by the layout and physics tests.
 
 ## At boot (NixOS)
 
@@ -65,7 +106,8 @@ default that list is the display manager and `getty@tty1`. The module sets
 console, right before they start. Alternatively, set `holdSeconds` to exit a
 fixed time after boot finishes.
 
-Options: `enable`, `package`, `holdSeconds`, `handoverUnits`, `showDevices`,
+Options: `enable`, `package`, `layout` (`force`/`radial`), `radialPull`,
+`holdSeconds`, `handoverUnits`, `showDevices`,
 `showProcesses`, `recordPath`, `quietKernel` (adds `quiet loglevel=3`). Plymouth
 must be disabled (asserted).
 

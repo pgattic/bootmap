@@ -86,6 +86,8 @@ pub struct Layout {
     pub extra_edges: Vec<(usize, usize)>,
     pub procs: Vec<ProcNode>,
     pub max_depth: u32,
+    /// Neighbors of each node (tree parent/children and extra edges).
+    pub adj: Vec<Vec<usize>>,
 }
 
 /// Sort key that is a strict total order, so the parent relation is acyclic.
@@ -269,7 +271,24 @@ impl Layout {
                 }
             }
         }
+
+        // Undirected adjacency over tree + extra edges.
+        lay.adj = vec![Vec::new(); lay.nodes.len()];
+        for (i, n) in lay.nodes.iter().enumerate() {
+            if let Some(p) = n.parent {
+                lay.adj[i].push(p);
+                lay.adj[p].push(i);
+            }
+        }
+        for &(a, b) in &lay.extra_edges {
+            lay.adj[a].push(b);
+            lay.adj[b].push(a);
+        }
         lay
+    }
+
+    pub fn degree(&self, i: usize) -> usize {
+        self.adj.get(i).map_or(0, |a| a.len())
     }
 
     /// Chain from the root to `name` (inclusive), root first.
