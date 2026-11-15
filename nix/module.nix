@@ -22,6 +22,45 @@ let
     radial = cfg.radialPull;
     no-processes = !cfg.showProcesses;
   };
+
+  # The same unit, by the same name, runs in the initrd and in the real system:
+  # that is how systemd keeps tracking the process across the switch to the
+  # real root. The "@" in ExecStart makes argv[0] start with "@", which keeps
+  # switch-root from killing it; IgnoreOnIsolate keeps initrd-switch-root.target
+  # from stopping it.
+  bootmapService = {
+    description = "Graphical boot visualizer";
+    # Start as early as possible. bootmap talks to PID 1 over its private
+    # socket, so it does not need dbus, and it waits for /dev/dri itself, so
+    # it does not need udev either.
+    unitConfig = {
+      DefaultDependencies = false;
+      IgnoreOnIsolate = true;
+    };
+    wantedBy = [ "sysinit.target" ];
+    # Without default dependencies we must opt in to being stopped at
+    # shutdown, and to not hiding an emergency shell behind the graph.
+    conflicts = [
+      "shutdown.target"
+      "emergency.service"
+      "rescue.service"
+    ];
+    before = [
+      "shutdown.target"
+      "emergency.service"
+      "rescue.service"
+    ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "@${lib.getExe cfg.package} @bootmap boot ${args}";
+      Restart = "no";
+      TimeoutStopSec = "3s";
+      RuntimeDirectory = "bootmap";
+      # Never get in the way of the boot.
+      Nice = 5;
+      OOMScoreAdjust = 500;
+    };
+  };
 in
 {
   options.services.bootmap = {
@@ -104,6 +143,18 @@ in
       description = "Where the recorded boot timeline is saved (view it later with `bootmap view <file>`).";
     };
 
+    initrd = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Start bootmap in the systemd initrd and follow the boot across the
+        switch to the real root with the same process, so the graph covers the
+        whole boot. Needs a systemd initrd, which current NixOS always uses (on
+        older releases, set `boot.initrd.systemd.enable`). Passphrase prompts
+        (LUKS) are not supported yet: bootmap would hide them.
+      '';
+    };
+
     quietKernel = mkOption {
       type = types.bool;
       default = true;
@@ -117,6 +168,23 @@ in
         assertion = !config.boot.plymouth.enable;
         message = "services.bootmap and boot.plymouth both want the display during boot; disable one of them.";
       }
+      {
+        # Newer nixpkgs removed the scripted initrd and with it this option
+        # (reading it throws): the initrd is then always systemd.
+        assertion =
+          !cfg.initrd
+          || (
+            let
+              r = builtins.tryEval config.boot.initrd.systemd.enable;
+            in
+            !r.success || r.value
+          );
+        message = "services.bootmap.initrd needs a systemd initrd (boot.initrd.systemd.enable = true).";
+      }
+      {
+        assertion = !cfg.initrd || config.boot.initrd.luks.devices == { };
+        message = "services.bootmap.initrd would hide the LUKS passphrase prompt; it does not support encrypted root yet.";
+      }
     ];
 
     boot.kernelParams = lib.optionals cfg.quietKernel [
@@ -125,27 +193,10 @@ in
       "udev.log_level=3"
     ];
 
-    systemd.services.bootmap = {
-      description = "Graphical boot visualizer";
-      # Start as early as possible in stage 2. bootmap talks to PID 1 over its
-      # private socket, so it does not need dbus, and it waits for /dev/dri
-      # itself, so it does not need udev either.
-      unitConfig.DefaultDependencies = false;
-      wantedBy = [ "sysinit.target" ];
-      # Without default dependencies we must opt in to being stopped at shutdown.
-      conflicts = [ "shutdown.target" ];
-      before = [ "shutdown.target" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${lib.getExe cfg.package} boot ${args}";
-        Restart = "no";
-        TimeoutStopSec = "3s";
-        RuntimeDirectory = "bootmap";
-        # Never get in the way of the boot.
-        Nice = 5;
-        OOMScoreAdjust = 500;
-      };
-    };
+    systemd.services.bootmap = bootmapService;
+
+    boot.initrd.systemd.services.bootmap = mkIf cfg.initrd bootmapService;
+    boot.initrd.systemd.storePaths = lib.optional cfg.initrd (lib.getExe cfg.package);
 
     # Shutdown view. Pulled in by shutdown.target and, having no default
     # dependencies or conflicts, it runs until the final killing spree. It takes

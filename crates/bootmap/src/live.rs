@@ -83,9 +83,18 @@ impl Source {
                     // Timestamps feed the layout ordering; re-layout on first start.
                     structural |= first_start;
                 }
+                Ok(LiveMsg::Finished(_)) if self.tl.phases.in_initrd => {}
                 Ok(LiveMsg::Finished(ph)) => {
                     self.tl.phases = ph;
                     finished_at.get_or_insert_with(Instant::now);
+                }
+                Ok(LiveMsg::Resync(new)) => {
+                    self.tl.merge_snapshot(*new, monotonic_now());
+                    *disconnected = false;
+                    if self.tl.phases.finish > 0 {
+                        finished_at.get_or_insert_with(Instant::now);
+                    }
+                    structural = true;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -95,6 +104,18 @@ impl Source {
             }
         }
         structural
+    }
+
+    /// After chrooting into the real root: look for the re-executed PID 1 on
+    /// a new channel. The gap must not look like "PID 1 is gone", so
+    /// `disconnected` is reset now; if reconnecting fails for 60 s the channel
+    /// closes and the usual disconnect path takes over again.
+    #[cfg(feature = "drm")]
+    pub fn reconnect(&mut self) {
+        if let Mode::Live { rx, disconnected, .. } = &mut self.mode {
+            *rx = crate::spawn_reconnecting_watcher();
+            *disconnected = false;
+        }
     }
 
     /// Current time on the boot clock (monotonic µs).
@@ -110,6 +131,9 @@ impl Source {
 
     /// Seconds since the boot finished (None if not finished yet).
     pub fn finished_for(&self) -> Option<f32> {
+        if self.tl.phases.in_initrd {
+            return None;
+        }
         match &self.mode {
             Mode::Live { finished_at, .. } => finished_at.map(|t| t.elapsed().as_secs_f32()),
             Mode::Replay { .. } => {

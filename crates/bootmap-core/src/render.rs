@@ -754,12 +754,17 @@ impl Renderer {
         self.draw_text(pm, &title, x, y, big, TEXT);
         y += big * 1.25;
         let (start, end) = tl.span();
-        let rel = t.saturating_sub(start) as f32 / 1e6;
         let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
-        let status = if finished {
-            format!("userspace +{:.3}s · boot finished", (tl.phases.finish - start) as f32 / 1e6)
+        let ph = &tl.phases;
+        let initrd_origin = if ph.initrd > 0 { ph.initrd } else { ph.userspace };
+        let status = if ph.in_initrd {
+            format!("initrd +{:.3}s", t.saturating_sub(initrd_origin) as f32 / 1e6)
+        } else if ph.initrd > 0 && t < ph.userspace {
+            format!("initrd +{:.3}s", t.saturating_sub(ph.initrd) as f32 / 1e6)
+        } else if finished {
+            format!("userspace +{:.3}s · boot finished", ph.finish.saturating_sub(ph.userspace) as f32 / 1e6)
         } else {
-            format!("userspace +{rel:.3}s")
+            format!("userspace +{:.3}s", t.saturating_sub(ph.userspace) as f32 / 1e6)
         };
         self.draw_text(pm, &status, x, y, small * 1.15, if finished { ACTIVE } else { ACTIVATING });
         y += line * 1.2;
@@ -819,7 +824,6 @@ impl Renderer {
         }
 
         // Phase bar along the bottom.
-        let ph = &tl.phases;
         let mut parts = vec![];
         if ph.firmware > ph.loader && ph.loader > 0 {
             parts.push(format!("firmware {:.1}s", (ph.firmware - ph.loader) as f32 / 1e6));
@@ -827,7 +831,10 @@ impl Renderer {
         if ph.loader > 0 {
             parts.push(format!("loader {:.1}s", ph.loader as f32 / 1e6));
         }
-        if ph.initrd > 0 {
+        if ph.in_initrd {
+            // The initrd's duration is not known yet.
+            parts.push(format!("kernel {:.2}s", initrd_origin as f32 / 1e6));
+        } else if ph.initrd > 0 {
             parts.push(format!("kernel {:.2}s", ph.initrd as f32 / 1e6));
             parts.push(format!("initrd {:.2}s", ph.userspace.saturating_sub(ph.initrd) as f32 / 1e6));
         } else if ph.userspace > 0 {

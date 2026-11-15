@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use bootmap_core::render::{RenderOptions, Style};
 use bootmap_core::systemd::{LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, LayoutOptions, UnitKind};
@@ -83,8 +83,8 @@ enum Cmd {
     /// Render one frame of a recorded boot to PNG.
     Render {
         input: PathBuf,
-        /// Seconds after userspace start, or "end".
-        #[arg(long, default_value = "end")]
+        /// Seconds after userspace start (negative: into the initrd), or "end".
+        #[arg(long, default_value = "end", allow_hyphen_values = true)]
         at: String,
         #[arg(short, long, default_value = "bootmap.png")]
         output: PathBuf,
@@ -207,19 +207,50 @@ fn parse_at(tl: &BootTimeline, at: &str) -> Result<u64> {
         return Ok(end);
     }
     let s: f64 = at.trim_end_matches('s').parse().context("--at must be seconds or \"end\"")?;
-    if s < 0.0 {
-        bail!("--at must be >= 0");
-    }
-    Ok(start + (s * 1e6) as u64)
+    // Relative to the userspace start; negative values reach back into the initrd.
+    let origin = if tl.phases.userspace > 0 { tl.phases.userspace } else { start };
+    let t = origin as i64 + (s * 1e6) as i64;
+    Ok(t.max(start as i64) as u64)
 }
 
 /// Helper used by `live`: spawn a thread that feeds systemd changes.
-pub fn spawn_watcher(mut sd: Systemd) -> mpsc::Receiver<LiveMsg> {
+pub fn spawn_watcher(sd: Systemd) -> mpsc::Receiver<LiveMsg> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || watch_into(sd, tx));
+    rx
+}
+
+fn watch_into(mut sd: Systemd, tx: mpsc::Sender<LiveMsg>) {
+    if let Err(e) = sd.watch(|m| tx.send(m).is_ok()) {
+        eprintln!("bootmap: watcher stopped: {e:#}");
+    }
+}
+
+/// After the switch to the real root: retry connecting to the re-executed
+/// PID 1 every 100 ms for up to 60 s. On success the thread sends a fresh
+/// snapshot (`LiveMsg::Resync`) and then watches like `spawn_watcher`. If the
+/// time runs out the thread ends, which closes the channel.
+#[cfg(feature = "drm")]
+pub fn spawn_reconnecting_watcher() -> mpsc::Receiver<LiveMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        if let Err(e) = sd.watch(|m| tx.send(m).is_ok()) {
-            eprintln!("bootmap: watcher stopped: {e:#}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            if let Ok(mut sd) = Systemd::connect() {
+                match sd.snapshot() {
+                    Ok(tl) => {
+                        eprintln!("bootmap: reconnected to systemd");
+                        if tx.send(LiveMsg::Resync(Box::new(tl))).is_ok() {
+                            watch_into(sd, tx);
+                        }
+                        return;
+                    }
+                    Err(e) => eprintln!("bootmap: snapshot after reconnect failed: {e:#}"),
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        eprintln!("bootmap: could not reconnect to systemd");
     });
     rx
 }

@@ -107,8 +107,11 @@ impl Output {
         Ok(())
     }
 
+    /// The card node vanished while its directory is still there. If
+    /// `/dev/dri` itself is missing (`/dev` moved away in the switch to the
+    /// real root, before we chroot), the device was not replaced.
     fn gone(&self) -> bool {
-        !self.card.1.exists()
+        !self.card.1.exists() && self.card.1.parent().is_some_and(|d| d.exists())
     }
 }
 
@@ -218,6 +221,38 @@ const KDSETMODE: u64 = 0x4B3A;
 const VT_ACTIVATE: u64 = 0x5606;
 extern "C" {
     fn ioctl(fd: i32, req: u64, ...) -> i32;
+    fn fchdir(fd: i32) -> i32;
+    fn chroot(path: *const std::ffi::c_char) -> i32;
+}
+
+/// Is the switch from the initrd to the real root about to happen?
+fn switch_root_imminent(tl: &bootmap_core::BootTimeline) -> bool {
+    let busy = |n: &str| tl.units.get(n).is_some_and(|u| u.job || u.t_activating.is_some());
+    busy("initrd-switch-root.target")
+        || busy("initrd-switch-root.service")
+        || tl.units.get("initrd-cleanup.service").is_some_and(|u| u.t_activating.is_some())
+}
+
+/// Open `/sysroot` to hold it, if it is a mount point (its device differs from `/`'s).
+fn open_sysroot() -> Option<File> {
+    use std::os::unix::fs::MetadataExt;
+    let root = std::fs::metadata("/").ok()?;
+    let sysroot = std::fs::metadata("/sysroot").ok()?;
+    if sysroot.dev() == root.dev() {
+        return None;
+    }
+    File::open("/sysroot").ok()
+}
+
+/// Enter the directory held in `fd` as our new root.
+fn enter_root(fd: &File) -> std::io::Result<()> {
+    // SAFETY: plain syscalls on a valid directory fd and a NUL-terminated path.
+    unsafe {
+        if fchdir(fd.as_raw_fd()) != 0 || chroot(c".".as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    std::env::set_current_dir("/")
 }
 impl VtGraphics {
     /// `switch_to: None` uses the VT in front. `Some(n)` brings VT `n` to
@@ -307,6 +342,9 @@ pub fn run(
     let mut last_check = Instant::now();
     let mut frames: u64 = 0;
     let mut released_at: Option<Instant> = None;
+    // Started in the initrd: hold /sysroot so we can follow the switch to the real root.
+    let mut in_initrd = !replay && scene.source.tl.phases.in_initrd;
+    let mut sysroot: Option<File> = None;
 
     while !sig.stopped() {
         let t0 = Instant::now();
@@ -361,14 +399,38 @@ pub fn run(
         if released_at.is_some_and(|t| t.elapsed() > RECORD_AFTER_RELEASE) {
             break;
         }
+        if in_initrd && sysroot.is_none() && switch_root_imminent(&scene.source.tl) {
+            sysroot = open_sysroot();
+            if sysroot.is_some() {
+                eprintln!("bootmap: holding /sysroot for the switch to the real root");
+            }
+        }
         if let crate::live::Mode::Live { disconnected: true, .. } = scene.source.mode {
+            if let (true, Some(fd)) = (in_initrd, sysroot.as_ref()) {
+                match enter_root(fd) {
+                    Ok(()) => {
+                        eprintln!("bootmap: followed systemd into the real root");
+                        in_initrd = false;
+                        sysroot = None;
+                        scene.source.reconnect();
+                        // Keep drawing on the same output.
+                        let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
+                        std::thread::sleep(pace.saturating_sub(t0.elapsed()));
+                        continue;
+                    }
+                    Err(e) => eprintln!("bootmap: could not enter the real root: {e}"),
+                }
+            } else if in_initrd {
+                eprintln!("bootmap: lost systemd in the initrd without holding /sysroot; stopping");
+            }
             // PID 1 went away (shutdown/switch-root); nothing more to show.
             break;
         }
         let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
         std::thread::sleep(pace.saturating_sub(t0.elapsed()));
     }
-    if !saved && !replay {
+    // Never write a recording from inside the initrd.
+    if !saved && !replay && !in_initrd {
         save(&record, &scene);
     }
     sd_notify("STOPPING=1");

@@ -54,6 +54,9 @@ pub enum LiveMsg {
     Event(Event),
     /// `StartupFinished` was emitted.
     Finished(Phases),
+    /// A fresh snapshot taken after reconnecting to the re-executed PID 1
+    /// (after the switch to the real root).
+    Resync(Box<BootTimeline>),
 }
 
 pub struct Systemd {
@@ -123,14 +126,17 @@ impl Systemd {
             debug(&format!("Get {k}"));
             Ok(proxy.get::<u64>(MANAGER_IFACE, k)?)
         };
+        let in_initrd = Path::new("/etc/initrd-release").exists();
         Ok(Phases {
             firmware: get("FirmwareTimestampMonotonic")?,
             loader: get("LoaderTimestampMonotonic")?,
             initrd: get("InitRDTimestampMonotonic")?,
             userspace: get("UserspaceTimestampMonotonic")?,
-            finish: get("FinishTimestampMonotonic")?,
+            // An initrd never "finishes" the boot.
+            finish: if in_initrd { 0 } else { get("FinishTimestampMonotonic")? },
             // Newer systemd only; absent means "not shutting down".
             shutdown_start: get("ShutdownStartTimestampMonotonic").unwrap_or(0),
+            in_initrd,
         })
     }
 

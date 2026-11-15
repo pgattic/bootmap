@@ -150,6 +150,9 @@ pub struct Phases {
     /// When a shutdown began (zero unless the system is shutting down).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub shutdown_start: Usec,
+    /// True while the timeline is followed from inside the initrd.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_initrd: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,9 +221,37 @@ impl BootTimeline {
         self.events.sort_by_key(|e| e.t);
     }
 
-    /// Time span covered: (start, end). Start is the userspace start.
+    /// Merge a fresh snapshot taken from the re-executed PID 1 after the
+    /// switch to the real root into the timeline followed from the initrd.
+    ///
+    /// `host`, `boot_id` and `phases` come from `new`, and every unit in `new`
+    /// replaces the one we had. Units only we know (initrd units the new
+    /// systemd has dropped) are kept; if they were still running they are
+    /// marked inactive at `switch_time` (unless they already have a stop
+    /// time), without job or processes. Callers pass the monotonic time at
+    /// which the reconnect succeeded. Events are rebuilt from the timestamps.
+    pub fn merge_snapshot(&mut self, new: BootTimeline, switch_time: Usec) {
+        self.host = new.host;
+        self.boot_id = new.boot_id;
+        self.phases = new.phases;
+        for u in self.units.values_mut().filter(|u| !new.units.contains_key(&u.name)) {
+            if matches!(u.state, UnitState::Active | UnitState::Activating | UnitState::Deactivating) {
+                u.state = UnitState::Inactive;
+                u.t_inactive.get_or_insert(switch_time);
+            }
+            u.job = false;
+            u.processes.clear();
+        }
+        self.units.extend(new.units);
+        self.synthesize_events();
+    }
+
+    /// Time span covered: (start, end). Start is the initrd start when known,
+    /// else the userspace start.
     pub fn span(&self) -> (Usec, Usec) {
-        let start = if self.phases.userspace > 0 {
+        let start = if self.phases.initrd > 0 {
+            self.phases.initrd
+        } else if self.phases.userspace > 0 {
             self.phases.userspace
         } else {
             self.events.first().map(|e| e.t).unwrap_or(0)
@@ -263,4 +294,48 @@ impl BootTimeline {
 
 fn is_zero(v: &Usec) -> bool {
     *v == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit(name: &str, state: UnitState, act: Option<Usec>, active: Option<Usec>) -> Unit {
+        let mut u = Unit::new(name);
+        u.state = state;
+        u.t_activating = act;
+        u.t_active = active;
+        u
+    }
+
+    #[test]
+    fn merge_snapshot_keeps_initrd_units() {
+        let mut old = BootTimeline::default();
+        old.phases.in_initrd = true;
+        let mut a = unit("initrd-only.service", UnitState::Active, Some(100), Some(200));
+        a.job = true;
+        a.processes.push(Process { pid: 1, comm: "x".into() });
+        old.units.insert(a.name.clone(), a);
+        old.units.insert("both.service".into(), unit("both.service", UnitState::Activating, Some(150), None));
+        old.synthesize_events();
+
+        let mut new = BootTimeline { host: "h".into(), ..Default::default() };
+        new.phases.userspace = 900;
+        new.units.insert("both.service".into(), unit("both.service", UnitState::Active, Some(150), Some(300)));
+        new.units.insert("new.service".into(), unit("new.service", UnitState::Active, Some(50), Some(60)));
+        new.synthesize_events();
+
+        old.merge_snapshot(new, 1000);
+        assert_eq!(old.host, "h");
+        assert!(!old.phases.in_initrd);
+        let a = &old.units["initrd-only.service"];
+        assert_eq!(a.state, UnitState::Inactive);
+        assert_eq!(a.t_inactive, Some(1000));
+        assert!(!a.job && a.processes.is_empty());
+        assert_eq!(old.units["both.service"].state, UnitState::Active);
+        assert_eq!(old.units["both.service"].t_active, Some(300));
+        assert!(old.units.contains_key("new.service"));
+        assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
+        assert!(old.events.iter().any(|e| e.unit == "initrd-only.service" && e.t == 1000));
+    }
 }

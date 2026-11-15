@@ -16,6 +16,33 @@ pkgs.testers.runNixOSTest {
         environment.systemPackages = [ pkgs.jq ];
       };
 
+    # Started in the systemd initrd: the same process must follow the boot
+    # across the switch to the real root, on the same display.
+    initrd =
+      { pkgs, ... }:
+      {
+        imports = [ self.nixosModules.default ];
+        services.bootmap = {
+          enable = true;
+          initrd = true;
+          holdSeconds = 8;
+          handoverUnits = [ ];
+        };
+        environment.systemPackages = [ pkgs.jq ];
+        # Keeps the initrd stage long enough to take a screenshot of it.
+        boot.initrd.systemd.extraBin.sleep = "${pkgs.coreutils}/bin/sleep";
+        boot.initrd.systemd.services.slow-initrd = {
+          wantedBy = [ "initrd.target" ];
+          before = [ "initrd.target" ];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "/bin/sleep 5";
+          };
+        };
+        # So the test can see bootmap's messages on the serial console.
+        boot.initrd.systemd.services.bootmap.serviceConfig.StandardError = "journal+console";
+      };
+
     # A real graphical greeter (a Wayland compositor holding DRM master) with
     # the default handover:
     # - the greeter must start (it used to be dropped from the boot
@@ -27,6 +54,9 @@ pkgs.testers.runNixOSTest {
       {
         imports = [ self.nixosModules.default ];
         services.bootmap.enable = true;
+        # Started in the initrd, so the handover and the shutdown view are
+        # exercised with a process that survived switch-root.
+        services.bootmap.initrd = true;
         hardware.graphics.enable = true;
         fonts.packages = [ pkgs.dejavu_fonts ];
         services.greetd = {
@@ -54,7 +84,10 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import time
 
-    start_all()
+    # Not start_all(): the initrd machine is booted when its turn comes, because
+    # its screenshots must catch short-lived moments of the boot.
+    held.start()
+    greeter.start()
 
     with subtest("held: draws during boot, records, exits after hold"):
         held.wait_until_succeeds("journalctl -b -u bootmap.service | grep -q 'drawing on'", timeout=60)
@@ -67,6 +100,29 @@ pkgs.testers.runNixOSTest {
         held.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
         held.succeed("bootmap render /var/log/bootmap/last.json -o /tmp/final.png")
         held.copy_from_machine("/tmp/final.png", "")
+
+    with subtest("initrd: one process follows the boot across switch-root"):
+        initrd.start()
+        initrd.wait_for_console_text("bootmap: drawing on")
+        time.sleep(2)  # host-side; lands while slow-initrd is still sleeping
+        initrd.screenshot("initrd")
+        # Right after the switch, while the display is still ours: once the
+        # getty starts, its login prompt covers the graph.
+        initrd.wait_for_console_text("followed systemd into the real root")
+        time.sleep(1.5)
+        initrd.screenshot("after-switch")
+        initrd.wait_for_unit("multi-user.target")
+        unit_log = initrd.succeed("journalctl -b -u bootmap.service --no-pager")
+        assert "followed systemd into the real root" in unit_log, unit_log
+        assert unit_log.count("bootmap: drawing on") == 1, unit_log
+        initrd.wait_until_succeeds("jq -e '.phases.finish > 0' /var/log/bootmap/last.json", timeout=60)
+        initrd.succeed("jq -e '.units[\"slow-initrd.service\"].t_activating > 0' /var/log/bootmap/last.json")
+        initrd.succeed("jq -e '.units[\"multi-user.target\"].t_active > 0' /var/log/bootmap/last.json")
+        initrd.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
+        initrd.succeed("bootmap render /var/log/bootmap/last.json --at -1 -o /tmp/replay-initrd.png")
+        initrd.succeed("bootmap render /var/log/bootmap/last.json -o /tmp/final-initrd.png")
+        initrd.copy_from_machine("/tmp/replay-initrd.png", "")
+        initrd.copy_from_machine("/tmp/final-initrd.png", "")
 
     with subtest("greeter: hands over to greetd, then finishes recording"):
         greeter.wait_for_unit("greetd.service")
