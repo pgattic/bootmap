@@ -1,0 +1,13 @@
+[package]
+name = "bootmap-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny-skia.workspace = true
+fontdue.workspace = true
+dbus.workspace = true
