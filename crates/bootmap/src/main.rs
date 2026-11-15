@@ -234,23 +234,28 @@ fn watch_into(mut sd: Systemd, tx: mpsc::Sender<LiveMsg>) {
 pub fn spawn_reconnecting_watcher() -> mpsc::Receiver<LiveMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while std::time::Instant::now() < deadline {
-            if let Ok(mut sd) = Systemd::connect() {
-                match sd.snapshot() {
-                    Ok(tl) => {
-                        eprintln!("bootmap: reconnected to systemd");
-                        if tx.send(LiveMsg::Resync(Box::new(tl))).is_ok() {
-                            watch_into(sd, tx);
-                        }
-                        return;
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(60);
+        // Failing is the normal state until PID 1 is back: keep only the last reason.
+        let mut last_err = None;
+        while Instant::now() < deadline {
+            let attempt = Systemd::connect().and_then(|mut sd| Ok((sd.snapshot()?, sd)));
+            match attempt {
+                Ok((tl, sd)) => {
+                    eprintln!("bootmap: reconnected to systemd");
+                    if tx.send(LiveMsg::Resync(Box::new(tl))).is_ok() {
+                        watch_into(sd, tx);
                     }
-                    Err(e) => eprintln!("bootmap: snapshot after reconnect failed: {e:#}"),
+                    return;
                 }
+                Err(e) => last_err = Some(e),
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
-        eprintln!("bootmap: could not reconnect to systemd");
+        match last_err {
+            Some(e) => eprintln!("bootmap: could not reconnect to systemd: {e:#}"),
+            None => eprintln!("bootmap: could not reconnect to systemd"),
+        }
     });
     rx
 }

@@ -295,8 +295,8 @@ impl Systemd {
                 if iface != UNIT_IFACE {
                     return out;
                 }
-                let Some(state) = prop_cast::<String>(&changed, "ActiveState") else { return out };
-                let state = UnitState::from_systemd(state);
+                let Some(raw) = prop_cast::<String>(&changed, "ActiveState") else { return out };
+                let state = UnitState::from_systemd(raw);
                 let name = match self.path_to_name.get(&path) {
                     Some(n) => n.clone(),
                     None => match self.fetch_unit(&path) {
@@ -315,7 +315,15 @@ impl Systemd {
                     UnitState::Inactive | UnitState::Failed => "InactiveEnterTimestampMonotonic",
                     UnitState::Deactivating => "ActiveExitTimestampMonotonic",
                 };
-                let t = nonzero(get_u64(&changed, ts_key)).unwrap_or_else(monotonic_now);
+                let stamp = nonzero(get_u64(&changed, ts_key));
+                debug(&format!("changed {name}: {raw} {ts_key}={stamp:?}"));
+                if state == UnitState::Inactive && stamp.is_none() {
+                    // Inactive and never left it: the unit has not run yet, so
+                    // nothing happened. (Stamping this with "now" would place
+                    // it after the start it actually precedes.)
+                    return out;
+                }
+                let t = stamp.unwrap_or_else(monotonic_now);
                 out.push(LiveMsg::Event(Event { t, unit: name, state }));
             }
             "StartupFinished" => {

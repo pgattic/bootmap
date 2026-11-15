@@ -229,8 +229,16 @@ impl BootTimeline {
     /// systemd has dropped) are kept; if they were still running they are
     /// marked inactive at `switch_time` (unless they already have a stop
     /// time), without job or processes. Callers pass the monotonic time at
-    /// which the reconnect succeeded. Events are rebuilt from the timestamps.
+    /// which the reconnect succeeded.
+    ///
+    /// Events: what we watched happen in the initrd is kept as it was seen. A
+    /// unit's timestamps only describe its latest run, so rebuilding from
+    /// them would erase the initrd run of anything the real system starts
+    /// again (journald, udevd). From the new systemd's start on, its
+    /// timestamps are the record. Whatever changed while we were disconnected
+    /// is reconciled with one event per unit at `switch_time`.
     pub fn merge_snapshot(&mut self, new: BootTimeline, switch_time: Usec) {
+        let cut = new.phases.userspace;
         self.host = new.host;
         self.boot_id = new.boot_id;
         self.phases = new.phases;
@@ -243,7 +251,26 @@ impl BootTimeline {
             u.processes.clear();
         }
         self.units.extend(new.units);
+
+        let mut events = std::mem::take(&mut self.events);
+        events.retain(|e| e.t < cut);
         self.synthesize_events();
+        events.extend(self.events.drain(..).filter(|e| e.t >= cut));
+        events.sort_by_key(|e| e.t);
+
+        let mut last: std::collections::HashMap<&str, UnitState> = std::collections::HashMap::new();
+        for e in &events {
+            last.insert(e.unit.as_str(), e.state);
+        }
+        let missed: Vec<Event> = self
+            .units
+            .values()
+            .filter(|u| last.get(u.name.as_str()).copied().unwrap_or_default() != u.state)
+            .map(|u| Event { t: switch_time, unit: u.name.clone(), state: u.state })
+            .collect();
+        events.extend(missed);
+        events.sort_by_key(|e| e.t);
+        self.events = events;
     }
 
     /// Time span covered: (start, end). Start is the initrd start when known,
@@ -271,8 +298,29 @@ impl BootTimeline {
         m
     }
 
-    /// Apply a live event: updates the unit and appends to the event log.
-    pub fn apply(&mut self, ev: Event) {
+    /// Apply a live event: updates the unit and adds it to the event log,
+    /// keeping the log sorted. Returns false if the event was dropped.
+    ///
+    /// systemd re-sends a unit's whole state whenever any property changes,
+    /// and signals queued while we were reading the units arrive after the
+    /// snapshot already covers them. So an event is only news if it moves the
+    /// unit forward: later than the unit's last event, or at the same instant
+    /// but further along (a target is "activating" and "active" at one
+    /// timestamp).
+    pub fn apply(&mut self, ev: Event) -> bool {
+        fn rank(s: UnitState) -> u8 {
+            match s {
+                UnitState::Activating => 1,
+                UnitState::Active => 2,
+                UnitState::Deactivating => 3,
+                UnitState::Inactive | UnitState::Failed => 4,
+            }
+        }
+        if let Some(last) = self.events.iter().rev().find(|e| e.unit == ev.unit) {
+            if ev.t < last.t || (ev.t == last.t && rank(ev.state) <= rank(last.state)) {
+                return false;
+            }
+        }
         let u = self.units.entry(ev.unit.clone()).or_insert_with(|| Unit::new(ev.unit.clone()));
         u.state = ev.state;
         match ev.state {
@@ -288,7 +336,9 @@ impl BootTimeline {
             }
             _ => {}
         }
-        self.events.push(ev);
+        let at = self.events.partition_point(|e| e.t <= ev.t);
+        self.events.insert(at, ev);
+        true
     }
 }
 
@@ -337,5 +387,63 @@ mod tests {
         assert!(old.units.contains_key("new.service"));
         assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
         assert!(old.events.iter().any(|e| e.unit == "initrd-only.service" && e.t == 1000));
+    }
+
+    #[test]
+    fn apply_drops_stale_and_repeated_events() {
+        use UnitState::*;
+        let ev = |t, state| Event { t, unit: "a.target".into(), state };
+        let mut tl = BootTimeline::default();
+        tl.units.insert("a.target".into(), unit("a.target", Active, Some(100), Some(100)));
+        tl.synthesize_events();
+        // Queued while the snapshot was taken: already covered by it.
+        assert!(!tl.apply(ev(100, Activating)));
+        assert!(!tl.apply(ev(100, Active)));
+        assert!(!tl.apply(ev(50, Inactive)));
+        // News.
+        assert!(tl.apply(ev(300, Deactivating)));
+        assert!(tl.apply(ev(300, Inactive)));
+        assert!(!tl.apply(ev(300, Inactive)));
+        // A second run, at one timestamp like targets have.
+        assert!(tl.apply(ev(400, Activating)));
+        assert!(tl.apply(ev(400, Active)));
+        assert_eq!(
+            history(&tl, "a.target"),
+            [(100, Activating), (100, Active), (300, Deactivating), (300, Inactive), (400, Activating), (400, Active)]
+        );
+        // An older event for another unit is slotted in, not appended.
+        assert!(tl.apply(Event { t: 200, unit: "b.service".into(), state: Activating }));
+        assert!(tl.events.windows(2).all(|w| w[0].t <= w[1].t));
+    }
+
+    fn history(tl: &BootTimeline, unit: &str) -> Vec<(Usec, UnitState)> {
+        tl.events.iter().filter(|e| e.unit == unit).map(|e| (e.t, e.state)).collect()
+    }
+
+    #[test]
+    fn merge_snapshot_keeps_what_was_seen_in_the_initrd() {
+        use UnitState::*;
+        let mut old = BootTimeline::default();
+        // Ran in the initrd, was stopped there, and the real system starts it again.
+        old.units.insert("restart.service".into(), unit("restart.service", Active, Some(100), Some(200)));
+        // Still running when we lost the connection; stopped before we were back.
+        old.units.insert("missed.service".into(), unit("missed.service", Active, Some(120), Some(220)));
+        old.synthesize_events();
+        old.apply(Event { t: 400, unit: "restart.service".into(), state: Inactive });
+
+        let mut new = BootTimeline::default();
+        new.phases.userspace = 900;
+        new.units.insert("restart.service".into(), unit("restart.service", Active, Some(950), Some(960)));
+        let mut missed = unit("missed.service", Inactive, Some(120), Some(220));
+        missed.t_inactive = Some(850);
+        new.units.insert("missed.service".into(), missed);
+
+        old.merge_snapshot(new, 1000);
+        assert_eq!(
+            history(&old, "restart.service"),
+            [(100, Activating), (200, Active), (400, Inactive), (950, Activating), (960, Active)]
+        );
+        assert_eq!(history(&old, "missed.service"), [(120, Activating), (220, Active), (1000, Inactive)]);
+        assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
     }
 }

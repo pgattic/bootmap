@@ -123,6 +123,7 @@ pkgs.testers.runNixOSTest {
         initrd.succeed("bootmap render /var/log/bootmap/last.json -o /tmp/final-initrd.png")
         initrd.copy_from_machine("/tmp/replay-initrd.png", "")
         initrd.copy_from_machine("/tmp/final-initrd.png", "")
+        initrd.copy_from_machine("/var/log/bootmap/last.json", "")
 
     with subtest("greeter: hands over to greetd, then finishes recording"):
         greeter.wait_for_unit("greetd.service")
@@ -147,7 +148,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("greeter: shutdown view takes the display back from the compositor"):
         # Detached and delayed: the test shell is itself stopped by the shutdown.
-        greeter.succeed("systemd-run --on-active=1 systemctl poweroff")
+        # Timers default to one-minute accuracy, so "in 1s" must be made exact.
+        greeter.succeed("systemd-run --on-active=1 --timer-property=AccuracySec=100ms systemctl poweroff")
         greeter.wait_for_console_text("bootmap: showing shutdown", timeout=30)
         time.sleep(2.5)  # host-side: the guest shell is gone
         greeter.screenshot("shutdown")

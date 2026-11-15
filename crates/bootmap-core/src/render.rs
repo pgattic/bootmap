@@ -757,10 +757,9 @@ impl Renderer {
         let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
         let ph = &tl.phases;
         let initrd_origin = if ph.initrd > 0 { ph.initrd } else { ph.userspace };
-        let status = if ph.in_initrd {
+        // Live in the initrd, or replaying the part of a recording before the switch.
+        let status = if ph.in_initrd || (ph.initrd > 0 && t < ph.userspace) {
             format!("initrd +{:.3}s", t.saturating_sub(initrd_origin) as f32 / 1e6)
-        } else if ph.initrd > 0 && t < ph.userspace {
-            format!("initrd +{:.3}s", t.saturating_sub(ph.initrd) as f32 / 1e6)
         } else if finished {
             format!("userspace +{:.3}s · boot finished", ph.finish.saturating_sub(ph.userspace) as f32 / 1e6)
         } else {

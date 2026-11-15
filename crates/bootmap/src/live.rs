@@ -79,9 +79,8 @@ impl Source {
                 }
                 Ok(LiveMsg::Event(ev)) => {
                     let first_start = self.tl.units.get(&ev.unit).is_none_or(|u| u.t_activating.is_none());
-                    self.tl.apply(ev);
                     // Timestamps feed the layout ordering; re-layout on first start.
-                    structural |= first_start;
+                    structural |= self.tl.apply(ev) && first_start;
                 }
                 Ok(LiveMsg::Finished(_)) if self.tl.phases.in_initrd => {}
                 Ok(LiveMsg::Finished(ph)) => {

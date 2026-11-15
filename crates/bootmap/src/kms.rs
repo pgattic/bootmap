@@ -406,25 +406,25 @@ pub fn run(
             }
         }
         if let crate::live::Mode::Live { disconnected: true, .. } = scene.source.mode {
-            if let (true, Some(fd)) = (in_initrd, sysroot.as_ref()) {
-                match enter_root(fd) {
-                    Ok(()) => {
-                        eprintln!("bootmap: followed systemd into the real root");
-                        in_initrd = false;
-                        sysroot = None;
-                        scene.source.reconnect();
-                        // Keep drawing on the same output.
-                        let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
-                        std::thread::sleep(pace.saturating_sub(t0.elapsed()));
-                        continue;
-                    }
-                    Err(e) => eprintln!("bootmap: could not enter the real root: {e}"),
+            // PID 1 went away. In the initrd that is the switch to the real
+            // root: follow it and keep drawing on the same output. Anywhere
+            // else (shutdown) there is nothing more to show.
+            let followed = match (in_initrd, sysroot.take()) {
+                (true, Some(fd)) => enter_root(&fd)
+                    .inspect_err(|e| eprintln!("bootmap: could not enter the real root: {e}"))
+                    .is_ok(),
+                (true, None) => {
+                    eprintln!("bootmap: lost systemd in the initrd without holding /sysroot; stopping");
+                    false
                 }
-            } else if in_initrd {
-                eprintln!("bootmap: lost systemd in the initrd without holding /sysroot; stopping");
+                (false, _) => false,
+            };
+            if !followed {
+                break;
             }
-            // PID 1 went away (shutdown/switch-root); nothing more to show.
-            break;
+            eprintln!("bootmap: followed systemd into the real root");
+            in_initrd = false;
+            scene.source.reconnect();
         }
         let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
         std::thread::sleep(pace.saturating_sub(t0.elapsed()));
