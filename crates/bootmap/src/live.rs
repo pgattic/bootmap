@@ -165,6 +165,8 @@ pub struct Scene {
     pub hover: Option<String>,
     pub dragging: Option<String>,
     epoch: Instant,
+    /// Frame timing, printed when BOOTMAP_STATS is set.
+    stats: Option<Stats>,
 }
 
 const TWEEN_SECS: f32 = 0.6;
@@ -193,6 +195,7 @@ impl Scene {
             source,
             opts,
             epoch: Instant::now(),
+            stats: std::env::var_os("BOOTMAP_STATS").map(|_| Stats::default()),
         }
     }
 
@@ -341,6 +344,7 @@ impl Scene {
 
     /// Advance (data, physics, camera) and draw one frame at the source's time.
     pub fn frame(&mut self, pm: &mut tiny_skia::Pixmap) {
+        let t0 = Instant::now();
         if self.source.poll() {
             self.relayout();
         }
@@ -350,8 +354,12 @@ impl Scene {
             }
         }
         self.update_positions();
+        let t1 = Instant::now();
         let t = self.source.now();
         self.draw_at(pm, t);
+        if let Some(st) = &mut self.stats {
+            st.record(t1 - t0, t1.elapsed(), pm.width(), pm.height());
+        }
     }
 
     /// Draw at a given boot time without advancing anything but the camera.
@@ -371,5 +379,34 @@ impl Scene {
             },
         };
         self.renderer.render(pm, &frame, &self.source.tl, t, wall);
+    }
+}
+
+/// Rolling frame-time statistics (BOOTMAP_STATS=1).
+#[derive(Default)]
+struct Stats {
+    frames: u32,
+    update: std::time::Duration,
+    draw: std::time::Duration,
+    since: Option<Instant>,
+}
+
+impl Stats {
+    fn record(&mut self, update: std::time::Duration, draw: std::time::Duration, w: u32, h: u32) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        self.frames += 1;
+        self.update += update;
+        self.draw += draw;
+        let el = since.elapsed();
+        if el.as_secs_f32() >= 2.0 {
+            let n = self.frames as f32;
+            eprintln!(
+                "bootmap: {w}x{h}: {:.1} fps · per frame: update {:.2} ms, draw {:.2} ms",
+                n / el.as_secs_f32(),
+                self.update.as_secs_f32() * 1e3 / n,
+                self.draw.as_secs_f32() * 1e3 / n,
+            );
+            *self = Stats::default();
+        }
     }
 }

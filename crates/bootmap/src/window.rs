@@ -31,6 +31,7 @@ struct App {
     pixmap: Option<tiny_skia::Pixmap>,
     cursor: (f32, f32),
     drag: Drag,
+    last_frame: std::time::Instant,
 }
 
 pub fn run(source: Source, graph: GraphArgs) -> Result<()> {
@@ -43,6 +44,7 @@ pub fn run(source: Source, graph: GraphArgs) -> Result<()> {
         pixmap: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
+        last_frame: std::time::Instant::now(),
     };
     el.run_app(&mut app)?;
     Ok(())
@@ -96,11 +98,13 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+        // Cap at ~60 fps: sleep only for what is left of the frame budget.
+        let budget = std::time::Duration::from_micros(16_600);
+        std::thread::sleep(budget.saturating_sub(self.last_frame.elapsed()));
+        self.last_frame = std::time::Instant::now();
         if let Some(w) = &self.window {
             w.request_redraw();
         }
-        // ~60 fps without spinning a core.
-        std::thread::sleep(std::time::Duration::from_millis(14));
     }
 }
 

@@ -153,6 +153,13 @@ fn main() -> Result<()> {
             scene.hover = highlight;
             let mut pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
             scene.draw_at(&mut pm, t);
+            if std::env::var_os("BOOTMAP_STATS").is_some() {
+                // Benchmark: animate the replay for a few seconds, printing frame times.
+                let start = std::time::Instant::now();
+                while start.elapsed().as_secs_f32() < 4.5 {
+                    scene.frame(&mut pm);
+                }
+            }
             pm.save_png(&output)?;
             let lay = &scene.layout;
             eprintln!("wrote {} ({} nodes, depth {})", output.display(), lay.nodes.len() - 1, lay.max_depth);
