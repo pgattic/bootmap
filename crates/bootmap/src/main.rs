@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bootmap_core::render::{RenderOptions, Style};
+use bootmap_core::render::RenderOptions;
 use bootmap_core::systemd::{LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, LayoutOptions, UnitKind};
 use clap::{Args, Parser, Subcommand};
@@ -42,10 +42,8 @@ pub struct GraphArgs {
     /// Hide faint non-tree dependency edges.
     #[arg(long)]
     no_extra_edges: bool,
-    /// Layout: "force" (physics, Obsidian-like) or "radial" (rigid rings).
-    #[arg(long, default_value = "force", value_parser = ["force", "radial"])]
-    layout: String,
-    /// Force layout: pull toward each unit's dependency-depth ring (0 = free, 1 = near rings).
+    /// Pull toward each unit's dependency depth: 0 lets the graph float
+    /// freely, 1 keeps early units near the center and late ones outside.
     #[arg(long, default_value_t = 0.5)]
     pub radial: f32,
 }
@@ -63,13 +61,6 @@ impl GraphArgs {
         o.include_never_started = self.all;
         o.processes = !self.no_processes;
         o
-    }
-    pub fn style(&self) -> Style {
-        if self.layout == "radial" {
-            Style::Radial
-        } else {
-            Style::Force
-        }
     }
     pub fn render_options(&self) -> RenderOptions {
         RenderOptions { extra_edges: !self.no_extra_edges, ..Default::default() }

@@ -1,10 +1,15 @@
-//! Radial tree layout. Radius = dependency depth.
+//! The dependency tree behind the graph, laid out radially.
 //!
 //! Each unit's tree parent is its critical-chain predecessor: the `After=`
 //! dependency that became active last before it, which is the same rule
 //! `systemd-analyze critical-chain` uses. Units without one hang off the
 //! central "system" node. Each subtree gets an angular wedge proportional
-//! to its leaf count, so related units share a sector.
+//! to its leaf count, at a radius given by its depth.
+//!
+//! This radial arrangement is not drawn as such. It is where the force
+//! simulation (`force`) starts from, which is why the graph settles quickly
+//! and comes out the same every boot, and its depths are what the
+//! simulation's radial pull aims for.
 
 use crate::model::{BootTimeline, Unit, UnitKind, Usec};
 use std::collections::{BTreeSet, HashMap};
@@ -65,17 +70,10 @@ impl Node {
 
 #[derive(Debug, Clone)]
 pub struct ProcNode {
+    /// Index of the unit this process belongs to.
     pub unit: usize,
     pub pid: u32,
     pub comm: String,
-    pub r: f32,
-    pub theta: f32,
-}
-
-impl ProcNode {
-    pub fn xy(&self) -> (f32, f32) {
-        (self.r * self.theta.cos(), self.r * self.theta.sin())
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -252,23 +250,11 @@ impl Layout {
             }
         }
 
-        // Process satellites: a small fan just outside the unit.
+        // Processes of each unit (the renderer places them around it).
         if opts.processes {
             for u in &visible {
-                let ui = lay.index[&u.name];
-                let n = &lay.nodes[ui];
-                let k = u.processes.len();
-                let span = (n.wedge.1 - n.wedge.0).min(0.08 * k as f32);
-                for (j, p) in u.processes.iter().enumerate() {
-                    let f = if k == 1 { 0.5 } else { j as f32 / (k - 1) as f32 };
-                    lay.procs.push(ProcNode {
-                        unit: ui,
-                        pid: p.pid,
-                        comm: p.comm.clone(),
-                        r: n.r + 0.38,
-                        theta: n.theta - span / 2.0 + span * f,
-                    });
-                }
+                let unit = lay.index[&u.name];
+                lay.procs.extend(u.processes.iter().map(|p| ProcNode { unit, pid: p.pid, comm: p.comm.clone() }));
             }
         }
 

@@ -4,10 +4,8 @@ use crate::GraphArgs;
 use anyhow::Result;
 use bootmap_core::model::Usec;
 use bootmap_core::systemd::{monotonic_now, LiveMsg, Systemd};
-use bootmap_core::render::{Camera, Frame, Style};
+use bootmap_core::render::{Camera, Frame};
 use bootmap_core::{BootTimeline, ForceParams, Layout, LayoutOptions, Renderer, Sim};
-use std::collections::HashMap;
-use std::f32::consts::{PI, TAU};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
@@ -193,13 +191,10 @@ impl Source {
 pub struct Scene {
     pub source: Source,
     opts: LayoutOptions,
-    pub style: Style,
     pub layout: Layout,
     pub sim: Sim,
+    /// World position of each layout node, from the simulation.
     pos: Vec<(f32, f32)>,
-    /// Radial mode: polar positions to tween from after a re-layout.
-    from: HashMap<String, (f32, f32)>,
-    tween_start: Instant,
     pub renderer: Renderer,
     pub cam: Camera,
     /// Keep the whole graph in view (off once the user pans or zooms).
@@ -213,7 +208,6 @@ pub struct Scene {
     stats: Option<Stats>,
 }
 
-const TWEEN_SECS: f32 = 0.6;
 /// Physics steps per drawn frame (settles in ~2.5 s at 60 fps).
 const TICKS_PER_FRAME: usize = 2;
 
@@ -222,14 +216,11 @@ impl Scene {
         let opts = graph.layout_options();
         let layout = Layout::compute(&source.tl, &opts);
         let sim = Sim::new(&layout, ForceParams { radial: graph.radial, ..Default::default() });
-        let pos = layout.nodes.iter().map(|n| n.xy()).collect();
+        let pos = sim.positions();
         Self {
-            style: graph.style(),
             sim,
             pos,
             layout,
-            from: HashMap::new(),
-            tween_start: Instant::now(),
             renderer: Renderer::new(graph.render_options()),
             cam: Camera { cx: 0.0, cy: 0.0, scale: 50.0 },
             auto_fit: true,
@@ -243,17 +234,11 @@ impl Scene {
         }
     }
 
+    /// The set of units changed: recompute the tree. The simulation keeps
+    /// known units where they are and lets new ones drift in.
     fn relayout(&mut self) {
-        self.from = self
-            .layout
-            .nodes
-            .iter()
-            .zip(&self.pos)
-            .map(|(n, &(x, y))| (n.name.clone(), ((x * x + y * y).sqrt(), y.atan2(x))))
-            .collect();
         self.layout = Layout::compute(&self.source.tl, &self.opts);
         self.sim.rebuild(&self.layout);
-        self.tween_start = Instant::now();
     }
 
     fn index(&self, name: &Option<String>) -> Option<usize> {
@@ -262,59 +247,9 @@ impl Scene {
 
     /// Run physics to rest (for still renders).
     pub fn settle(&mut self) {
-        if self.style == Style::Force {
-            self.sim.settle(2000);
-        }
-        self.from.clear();
-        self.update_positions();
+        self.sim.settle(2000);
+        self.pos = self.sim.positions();
         self.snap = true;
-    }
-
-    fn update_positions(&mut self) {
-        match self.style {
-            Style::Force => self.pos = self.sim.positions(),
-            Style::Radial => {
-                let f = (self.tween_start.elapsed().as_secs_f32() / TWEEN_SECS).min(1.0);
-                let e = 1.0 - (1.0 - f).powi(3); // ease-out cubic
-                self.pos = self
-                    .layout
-                    .nodes
-                    .iter()
-                    .map(|n| match self.from.get(&n.name) {
-                        Some(&(r0, t0)) if f < 1.0 => {
-                            let mut dt = (n.theta - t0).rem_euclid(TAU);
-                            if dt > PI {
-                                dt -= TAU;
-                            }
-                            let (r, th) = (r0 + (n.r - r0) * e, t0 + dt * e);
-                            (r * th.cos(), r * th.sin())
-                        }
-                        _ => n.xy(),
-                    })
-                    .collect();
-            }
-        }
-    }
-
-    pub fn set_style(&mut self, style: Style) {
-        if style == self.style {
-            return;
-        }
-        // Tween (radial) or relax (force) from wherever nodes are now.
-        self.from = self
-            .layout
-            .nodes
-            .iter()
-            .zip(&self.pos)
-            .map(|(n, &(x, y))| (n.name.clone(), ((x * x + y * y).sqrt(), y.atan2(x))))
-            .collect();
-        self.tween_start = Instant::now();
-        if style == Style::Force {
-            // Restart physics from the radial positions.
-            self.sim = Sim::new(&self.layout, self.sim.params);
-        }
-        self.style = style;
-        self.auto_fit = true;
     }
 
     pub fn adjust_radial(&mut self, delta: f32) {
@@ -330,9 +265,9 @@ impl Scene {
         self.layout.nodes[i].name.clone()
     }
 
-    /// Start dragging node `i` (force mode only).
+    /// Start dragging node `i`. The center node stays put.
     pub fn begin_drag(&mut self, i: usize) {
-        if self.style != Style::Force || i == bootmap_core::layout::ROOT {
+        if i == bootmap_core::layout::ROOT {
             return;
         }
         self.dragging = Some(self.node_name(i));
@@ -356,14 +291,7 @@ impl Scene {
     }
 
     fn frame_desc(&self, hover: Option<usize>) -> Frame<'_> {
-        Frame {
-            lay: &self.layout,
-            pos: &self.pos,
-            style: self.style,
-            cam: self.cam,
-            hover,
-            rings: ring_opacity(self.style),
-        }
+        Frame { lay: &self.layout, pos: &self.pos, cam: self.cam, hover }
     }
 
     fn update_camera(&mut self, w: f32, h: f32) {
@@ -371,14 +299,7 @@ impl Scene {
             return;
         }
         let margin = 0.05 * w.min(h) + if self.renderer.opts.labels { 70.0 } else { 20.0 };
-        let target = match self.style {
-            Style::Radial => {
-                // Fit the outer ring, not the momentary node spread.
-                let ext = bootmap_core::layout::radius(self.layout.max_depth);
-                Camera::fit_centered(&[(ext, ext)], w, h, margin)
-            }
-            Style::Force => Camera::fit(&self.pos, w, h, margin),
-        };
+        let target = Camera::fit(&self.pos, w, h, margin);
         self.cam = if self.snap { target } else { self.cam.lerp(target, 0.08) };
         self.snap = false;
     }
@@ -389,12 +310,10 @@ impl Scene {
         if self.source.poll() {
             self.relayout();
         }
-        if self.style == Style::Force {
-            for _ in 0..TICKS_PER_FRAME {
-                self.sim.tick();
-            }
+        for _ in 0..TICKS_PER_FRAME {
+            self.sim.tick();
         }
-        self.update_positions();
+        self.pos = self.sim.positions();
         let t1 = Instant::now();
         let t = self.source.now();
         self.draw_at(pm, t);
@@ -407,15 +326,7 @@ impl Scene {
     pub fn draw_at(&mut self, pm: &mut tiny_skia::Pixmap, t: Usec) {
         self.update_camera(pm.width() as f32, pm.height() as f32);
         let wall = self.epoch.elapsed().as_secs_f32();
-        let hover = self.index(&self.hover);
-        let frame = Frame {
-            lay: &self.layout,
-            pos: &self.pos,
-            style: self.style,
-            cam: self.cam,
-            hover,
-            rings: ring_opacity(self.style),
-        };
+        let frame = Frame { lay: &self.layout, pos: &self.pos, cam: self.cam, hover: self.index(&self.hover) };
         self.renderer.render(pm, &frame, &self.source.tl, t, wall);
     }
 }
@@ -446,14 +357,5 @@ impl Stats {
             );
             *self = Stats::default();
         }
-    }
-}
-
-/// Depth-ring guides are exact in radial mode. In force mode units only drift
-/// toward their depth, so drawn rings would suggest precision that isn't there.
-fn ring_opacity(style: Style) -> f32 {
-    match style {
-        Style::Radial => 1.0,
-        Style::Force => 0.0,
     }
 }

@@ -1,10 +1,10 @@
 //! Software renderer: Layout + timeline at time `t` -> tiny-skia Pixmap.
 
-use crate::layout::{radius, Layout, ROOT};
+use crate::layout::{Layout, ROOT};
 use crate::model::{BootTimeline, UnitKind, UnitState, Usec};
 use fontdue::{Font, FontSettings};
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use tiny_skia::{
     Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
 };
@@ -51,15 +51,6 @@ pub enum Visual {
     Stopping,
 }
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Style {
-    /// Rigid radial tree (radius = dependency depth).
-    Radial,
-    /// Force-directed with a soft pull toward the depth rings.
-    Force,
-}
-
 /// Maps world units (one ring = 1.0) to pixels.
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
@@ -97,13 +88,6 @@ impl Camera {
         Self { cx: (x0 + x1) / 2.0, cy: (y0 + y1) / 2.0, scale }
     }
 
-    /// Fit symmetric around the origin (keeps the center node centered).
-    pub fn fit_centered(points: &[(f32, f32)], w: f32, h: f32, margin: f32) -> Self {
-        let ext = points.iter().fold(1.0f32, |m, &(x, y)| m.max(x.abs()).max(y.abs()));
-        let scale = ((w.min(h) / 2.0 - margin).max(25.0)) / ext;
-        Self { cx: 0.0, cy: 0.0, scale }
-    }
-
     /// Smoothly move toward `o` (scale interpolated geometrically).
     pub fn lerp(self, o: Camera, f: f32) -> Camera {
         Camera {
@@ -128,11 +112,8 @@ pub struct Frame<'a> {
     pub lay: &'a Layout,
     /// World position of each layout node.
     pub pos: &'a [(f32, f32)],
-    pub style: Style,
     pub cam: Camera,
     pub hover: Option<usize>,
-    /// Opacity of the depth-ring guides, 0..=1.
-    pub rings: f32,
 }
 
 impl Frame<'_> {
@@ -150,9 +131,6 @@ impl Frame<'_> {
     }
 }
 
-fn polar(x: f32, y: f32) -> (f32, f32) {
-    ((x * x + y * y).sqrt(), y.atan2(x))
-}
 
 fn label_color(v: Visual, is_target: bool) -> Rgb {
     match v {
@@ -261,22 +239,6 @@ impl Renderer {
         w
     }
 
-    /// Draw text rotated about its anchor (left-middle, or right-middle if `flip`).
-    fn draw_text_rotated(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, angle: f32, px: f32, c: Rgb) {
-        let Some(t) = self.text(s, px, c) else { return };
-        let t = t.clone();
-        let (w, h) = (t.width() as f32, t.height() as f32);
-        // Keep text upright: flip on the left half of the circle.
-        let a = angle.rem_euclid(TAU);
-        let flip = a > PI / 2.0 && a < 3.0 * PI / 2.0;
-        let (rot, dx) = if flip { (a - PI, -w) } else { (a, 0.0) };
-        let tr = Transform::from_translate(x, y)
-            .pre_rotate(rot.to_degrees())
-            .pre_translate(dx, -h / 2.0);
-        let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
-        pm.draw_pixmap(0, 0, t.as_ref(), &paint, tr, None);
-    }
-
     /// Render a frame. `t` is absolute monotonic µs; `wall` is seconds of wall
     /// time used for animation (pulsing).
     pub fn render(&mut self, pm: &mut Pixmap, f: &Frame, tl: &BootTimeline, t: Usec, wall: f32) {
@@ -315,17 +277,6 @@ impl Renderer {
             }
         };
         let (ox, oy) = cam.to_px(w, h, 0.0, 0.0);
-        let force = f.style == Style::Force;
-
-        // Depth rings: solid guides in radial mode, faint hints in force mode.
-        if f.rings > 0.01 {
-            let ring_stroke = Stroke { width: 1.0, ..Default::default() };
-            for d in 1..=lay.max_depth {
-                if let Some(c) = PathBuilder::from_circle(ox, oy, radius(d) * cam.scale) {
-                    pm.stroke_path(&c, &paint(RING, 0.6 * f.rings), &ring_stroke, Transform::identity(), None);
-                }
-            }
-        }
 
         // Non-tree dependency edges between started units.
         if self.opts.extra_edges {
@@ -338,16 +289,10 @@ impl Renderer {
                 let pb = if edge_focus(a, b) > 1.0 { &mut lit } else { &mut faint };
                 let ((x0, y0), (x1, y1)) = (px(a), px(b));
                 pb.move_to(x0, y0);
-                if force {
-                    pb.line_to(x1, y1);
-                } else {
-                    // Bow the chord towards the center.
-                    let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-                    pb.quad_to(mx + (ox - mx) * 0.35, my + (oy - my) * 0.35, x1, y1);
-                }
+                pb.line_to(x1, y1);
             }
             let s = Stroke { width: 0.6, ..Default::default() };
-            let base = if focus.is_some() { 0.03 } else if force { 0.10 } else { 0.07 };
+            let base = if focus.is_some() { 0.03 } else { 0.10 };
             if let Some(p) = faint.finish() {
                 pm.stroke_path(&p, &paint(MUTED, base), &s, Transform::identity(), None);
             }
@@ -366,20 +311,7 @@ impl Renderer {
             let pb = groups.entry((node_vis(i) as u8, fkey)).or_default();
             let ((x0, y0), (x1, y1)) = (px(p), px(i));
             pb.move_to(x0, y0);
-            if force {
-                pb.line_to(x1, y1);
-            } else {
-                // Radial: leave the parent outward, arrive at the child radially.
-                let (r0, t0) = polar(x0 - ox, y0 - oy);
-                let (r1, t1) = polar(x1 - ox, y1 - oy);
-                let mid = (r0 + r1) / 2.0;
-                let (c2x, c2y) = (ox + mid * t1.cos(), oy + mid * t1.sin());
-                if p == ROOT {
-                    pb.quad_to(c2x, c2y, x1, y1);
-                } else {
-                    pb.cubic_to(ox + mid * t0.cos(), oy + mid * t0.sin(), c2x, c2y, x1, y1);
-                }
-            }
+            pb.line_to(x1, y1);
         }
         for ((key, fkey), pb) in groups {
             let (c, a, wdt) = match key {
@@ -406,20 +338,15 @@ impl Renderer {
                 continue;
             }
             let (x0, y0) = px(p.unit);
-            let (x, y) = if force {
-                // Orbit, fanning away from the center.
-                let siblings: Vec<usize> =
-                    lay.procs.iter().enumerate().filter(|(_, q)| q.unit == p.unit).map(|(j, _)| j).collect();
-                let k = siblings.len() as f32;
-                let j = siblings.iter().position(|&j| j == pi).unwrap_or(0) as f32;
-                let (_, out) = polar(x0 - ox, y0 - oy);
-                let a = out + (j - (k - 1.0) / 2.0) * 0.6;
-                let d = (cam.scale * 0.22).clamp(9.0, 22.0);
-                (x0 + d * a.cos(), y0 + d * a.sin())
-            } else {
-                let (wx, wy) = (p.r * p.theta.cos(), p.r * p.theta.sin());
-                cam.to_px(w, h, wx, wy)
-            };
+            // Orbit the unit, fanning away from the center.
+            let siblings: Vec<usize> =
+                lay.procs.iter().enumerate().filter(|(_, q)| q.unit == p.unit).map(|(j, _)| j).collect();
+            let k = siblings.len() as f32;
+            let j = siblings.iter().position(|&j| j == pi).unwrap_or(0) as f32;
+            let out = (y0 - oy).atan2(x0 - ox);
+            let angle = out + (j - (k - 1.0) / 2.0) * 0.6;
+            let d = (cam.scale * 0.22).clamp(9.0, 22.0);
+            let (x, y) = (x0 + d * angle.cos(), y0 + d * angle.sin());
             let a = dim(p.unit);
             let mut pb = PathBuilder::new();
             pb.move_to(x0, y0);
@@ -440,15 +367,8 @@ impl Renderer {
             let v = node_vis(i);
             let (x, y) = px(i);
             let is_target = n.kind == Some(UnitKind::Target);
-            let base = if force {
-                // Obsidian-style: size by connectedness.
-                let b = 2.2 + 0.85 * (lay.degree(i) as f32).sqrt();
-                if is_target { b * 1.25 } else { b }
-            } else if is_target {
-                4.5
-            } else {
-                2.8
-            };
+            // Size by connectedness; targets a little larger.
+            let base = (2.2 + 0.85 * (lay.degree(i) as f32).sqrt()) * if is_target { 1.25 } else { 1.0 };
             let (c, a, rad) = match v {
                 Visual::Ghost => (GHOST, 0.8, base * 0.6),
                 Visual::Activating | Visual::Stopping => (ACTIVATING, 1.0, base * (1.0 + 0.35 * pulse)),
@@ -490,11 +410,7 @@ impl Renderer {
         }
 
         if self.opts.labels {
-            if force {
-                self.labels_force(pm, f, &node_vis, &radii, &focus, w, h);
-            } else {
-                self.labels_radial(pm, f, &node_vis, &dim, w, h);
-            }
+            self.labels(pm, f, &node_vis, &radii, &focus, w, h);
         }
 
         if self.opts.hud {
@@ -566,51 +482,9 @@ impl Renderer {
         self.draw_text(pm, hint, x, y, small, MUTED);
     }
 
-    /// Radial mode: labels run outward along the spoke where the wedge has room.
-    fn labels_radial(
-        &mut self,
-        pm: &mut Pixmap,
-        f: &Frame,
-        node_vis: &dyn Fn(usize) -> Visual,
-        dim: &dyn Fn(usize) -> f32,
-        w: f32,
-        h: f32,
-    ) {
-        let lay = f.lay;
-        let scale = f.cam.scale;
-        let px = (scale * 0.13).clamp(9.0, 13.0);
-        let (ox, oy) = f.cam.to_px(w, h, 0.0, 0.0);
-        for (i, n) in lay.nodes.iter().enumerate().skip(1) {
-            let v = node_vis(i);
-            if v == Visual::Ghost && f.hover != Some(i) {
-                continue;
-            }
-            if dim(i) < 1.0 {
-                continue;
-            }
-            let (x, y) = f.cam.to_px(w, h, f.pos[i].0, f.pos[i].1);
-            let (r, theta) = polar(x - ox, y - oy);
-            let arc = (n.wedge.1 - n.wedge.0) * r;
-            let is_target = n.kind == Some(UnitKind::Target);
-            let room = arc >= px * 0.95 || (is_target && arc >= px * 0.6) || matches!(v, Visual::Activating | Visual::Stopping) || f.hover.is_some();
-            let leaf = n.children.is_empty();
-            if !room || !(leaf || is_target || v != Visual::Active || f.hover.is_some()) {
-                continue;
-            }
-            let c = label_color(v, is_target);
-            let name = short_name(&n.name);
-            if leaf {
-                let off = 0.18 * scale;
-                self.draw_text_rotated(pm, &name, ox + (r + off) * theta.cos(), oy + (r + off) * theta.sin(), theta, px, c);
-            } else {
-                self.draw_text(pm, &name, x + 6.0, y + px * 0.35, px, c);
-            }
-        }
-    }
-
-    /// Force mode: horizontal labels, placed by priority, skipping overlaps.
+    /// Horizontal labels, placed by priority, skipping overlaps.
     #[allow(clippy::too_many_arguments)]
-    fn labels_force(
+    fn labels(
         &mut self,
         pm: &mut Pixmap,
         f: &Frame,

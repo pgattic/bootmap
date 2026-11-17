@@ -18,7 +18,6 @@ let
     record = cfg.recordPath;
     hold = cfg.holdSeconds;
     devices = cfg.showDevices;
-    layout = cfg.layout;
     radial = cfg.radialPull;
     no-processes = !cfg.showProcesses;
   };
@@ -71,8 +70,12 @@ let
   };
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "bootmap" "layout" ] "bootmap now only has the force layout; services.bootmap.radialPull = 1 keeps units close to their dependency depth.")
+  ];
+
   options.services.bootmap = {
-    enable = mkEnableOption "bootmap, a graphical radial boot visualizer drawn on the display during boot";
+    enable = mkEnableOption "bootmap, a graphical boot visualizer drawn on the display during boot";
 
     package = mkOption {
       type = types.package;
@@ -105,23 +108,10 @@ in
       '';
     };
 
-    layout = mkOption {
-      type = types.enum [
-        "force"
-        "radial"
-      ];
-      default = "force";
-      description = ''
-        `force`: a physics-based, Obsidian-like graph where units float and
-        settle, with a soft pull toward their dependency depth.
-        `radial`: a rigid radial tree where distance from the center is exactly dependency depth.
-      '';
-    };
-
     radialPull = mkOption {
       type = types.numbers.between 0 1;
       default = 0.5;
-      description = "Force layout only: how strongly units are pulled toward their dependency-depth ring (0 = free, 1 = close to rings).";
+      description = "How strongly units are pulled toward their dependency depth: 0 lets the graph float freely, 1 keeps early units near the center and late ones outside.";
     };
 
     showDevices = mkOption {

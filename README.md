@@ -7,28 +7,29 @@ units. Units light up as they start. It is inspired by
 [bootvine](https://codeberg.org/wvhulle/bootvine), which shows the same idea as
 a TUI tree.
 
-## Layouts
+## The graph
 
-**`force`** (default) is a physics simulation:
+The layout is a physics simulation:
 
 - units repel each other;
 - dependency edges act as springs;
 - weak gravity holds the graph together;
-- a soft **radial pull** nudges each unit toward the ring of its dependency depth.
+- a soft **radial pull** nudges each unit toward a distance from the center
+  that matches its dependency depth.
 
-`--radial 0` lets the graph float freely. `--radial 1` keeps it close to
-rings, so early units stay near the center and `graphical.target` drifts
-outward. The simulation starts from the radial layout, so it settles in a
-couple of seconds and comes out the same every time. When new units appear
-during a live boot, they spawn next to their parent and drift into place.
-Nodes are sized by how many connections they have.
+`--radial 0` lets the graph float freely. `--radial 1` holds units close to
+their depth, so early units stay near the center and `graphical.target` drifts
+outward. When new units appear during a live boot, they spawn next to their
+parent and drift into place. Nodes are sized by how many connections they
+have.
 
-**`radial`** is a rigid radial tree where distance from the center is exactly
-the dependency depth. Each unit's parent is its critical-chain predecessor:
-the `After=` dependency that finished starting last before it (the rule
-`systemd-analyze critical-chain` uses). Each subtree gets its own wedge.
+Each unit's parent is its critical-chain predecessor: the `After=` dependency
+that finished starting last before it (the rule `systemd-analyze
+critical-chain` uses). The simulation starts from a radial tree built on
+those parents, so it settles in a couple of seconds and comes out the same
+every time.
 
-In both layouts, colors show state:
+Colors show state:
 
 - grey: pending
 - amber: activating (pulsing)
@@ -54,10 +55,9 @@ In the viewer:
 | Input | Action |
 |---|---|
 | hover | highlight a unit and its neighbors; details panel |
-| drag a unit | move it (force layout); it rejoins the physics on release |
+| drag a unit | move it; it rejoins the physics on release |
 | drag background / scroll | pan / zoom at cursor |
 | `f` or `0` | fit the graph to the window again |
-| `m` | switch between force and radial layouts |
 | `[` / `]` | weaken / strengthen the radial pull |
 | `space`, `←`/`→`, `r` | pause, scrub, restart the replay |
 | `l`, `e` | toggle labels, toggle extra dependency edges |
@@ -65,7 +65,7 @@ In the viewer:
 
 Graph flags:
 
-- `--layout force|radial` and `--radial <0..1>`
+- `--radial <0..1>`
 - `--devices` and `--slices` to also show those unit types
 - `--all` to include units that never started
 - `--no-processes` and `--no-extra-edges`
@@ -156,7 +156,7 @@ units fading out as they stop and lists the ones holding the shutdown up. It
 runs until systemd hands over to the final shutdown stage. Disable it with
 `showShutdown = false`.
 
-Options: `enable`, `package`, `layout` (`force`/`radial`), `radialPull`,
+Options: `enable`, `package`, `radialPull`,
 `holdSeconds`, `handoverUnits`, `initrd`, `showShutdown`, `showDevices`,
 `showProcesses`, `recordPath`, `quietKernel` (adds `quiet loglevel=3`). Plymouth
 must be disabled (asserted).
@@ -204,7 +204,7 @@ Two quirks found while testing, as of systemd 262:
 ## Layout
 
 ```
-crates/bootmap-core   model (JSON timeline), systemd client, radial layout, tiny-skia renderer
+crates/bootmap-core   model (JSON timeline), systemd client, dependency tree, force simulation, tiny-skia renderer
 crates/bootmap        CLI: capture / render / view (winit+softbuffer) / boot
                       (kms: main loop, display: KMS outputs, vt: terminal and
                       keyboard, ask: password agent)

@@ -7,7 +7,6 @@
 use crate::live::{Scene, Source};
 use crate::GraphArgs;
 use anyhow::Result;
-use bootmap_core::render::Style;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::application::ApplicationHandler;
@@ -125,10 +124,6 @@ impl App {
                 "r" => s.source.restart(),
                 "l" => s.renderer.opts.labels = !s.renderer.opts.labels,
                 "e" => s.renderer.opts.extra_edges = !s.renderer.opts.extra_edges,
-                "m" => {
-                    let next = if s.style == Style::Force { Style::Radial } else { Style::Force };
-                    s.set_style(next);
-                }
                 "[" => s.adjust_radial(-0.1),
                 "]" => s.adjust_radial(0.1),
                 "f" | "0" => s.auto_fit = true,
@@ -166,12 +161,12 @@ impl App {
         let (w, h) = self.size();
         let (x, y) = self.cursor;
         match self.scene.pick(w, h, x, y) {
-            Some(i) if self.scene.style == Style::Force => {
+            Some(i) => {
                 self.scene.begin_drag(i);
                 self.scene.auto_fit = false;
                 self.drag = Drag::Node;
             }
-            _ => {
+            None => {
                 self.scene.auto_fit = false;
                 self.drag = Drag::Pan(x, y);
                 if let Some(win) = &self.window {
