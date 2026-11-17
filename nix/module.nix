@@ -51,7 +51,10 @@ let
       "rescue.service"
     ];
     serviceConfig = {
-      Type = "simple";
+      # Ready means: has the display (and with it the passphrase prompt), or
+      # has stopped expecting one in time. The console password agent is
+      # ordered after this.
+      Type = "notify";
       ExecStart = "@${lib.getExe cfg.package} @bootmap boot ${args}";
       Restart = "no";
       TimeoutStopSec = "3s";
@@ -60,6 +63,11 @@ let
       Nice = 5;
       OOMScoreAdjust = 500;
     };
+  };
+
+  consoleAgentPath = {
+    after = [ "bootmap.service" ];
+    unitConfig.ConditionPathExists = "!/run/bootmap/agent";
   };
 in
 {
@@ -150,8 +158,9 @@ in
         Start bootmap in the systemd initrd and follow the boot across the
         switch to the real root with the same process, so the graph covers the
         whole boot. Needs a systemd initrd, which current NixOS always uses (on
-        older releases, set `boot.initrd.systemd.enable`). Passphrase prompts
-        (LUKS) are not supported yet: bootmap would hide them.
+        older releases, set `boot.initrd.systemd.enable`). Passphrase requests,
+        such as unlocking an encrypted disk, are shown over the graph and
+        answered from the keyboard.
       '';
     };
 
@@ -181,10 +190,6 @@ in
           );
         message = "services.bootmap.initrd needs a systemd initrd (boot.initrd.systemd.enable = true).";
       }
-      {
-        assertion = !cfg.initrd || config.boot.initrd.luks.devices == { };
-        message = "services.bootmap.initrd would hide the LUKS passphrase prompt; it does not support encrypted root yet.";
-      }
     ];
 
     boot.kernelParams = lib.optionals cfg.quietKernel [
@@ -195,8 +200,21 @@ in
 
     systemd.services.bootmap = bootmapService;
 
-    boot.initrd.systemd.services.bootmap = mkIf cfg.initrd bootmapService;
-    boot.initrd.systemd.storePaths = lib.optional cfg.initrd (lib.getExe cfg.package);
+    # While bootmap has the screen and keyboard it answers passphrase requests
+    # itself and keeps /run/bootmap/agent in place. systemd's console agent
+    # would read from the same terminal and take keystrokes meant for
+    # bootmap's prompt, so it is left out for that boot stage, the same way it
+    # is for Plymouth: its path unit is ordered after bootmap.service, which
+    # reports ready once it has the display or has given up waiting, and is
+    # skipped if the marker is there. Without the marker (no display) the
+    # console agent works as usual.
+    systemd.paths.systemd-ask-password-console = consoleAgentPath;
+
+    boot.initrd.systemd = mkIf cfg.initrd {
+      storePaths = [ (lib.getExe cfg.package) ];
+      services.bootmap = bootmapService;
+      paths.systemd-ask-password-console = consoleAgentPath;
+    };
 
     # Shutdown view. Pulled in by shutdown.target and, having no default
     # dependencies or conflicts, it runs until the final killing spree. It takes

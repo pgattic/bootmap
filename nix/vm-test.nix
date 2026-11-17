@@ -1,11 +1,25 @@
 { pkgs, self }:
 
+let
+  # A small LUKS volume, attached as an extra disk and unlocked in the initrd.
+  secret = rec {
+    passphrase = "sample passphrase";
+    uuid = "5f0a3c1e-7d42-4b8e-9c61-2a9d1e4f7b30";
+    image = pkgs.runCommand "bootmap-luks-disk" { nativeBuildInputs = [ pkgs.cryptsetup ]; } ''
+      truncate -s 32M disk.img
+      echo -n '${passphrase}' | cryptsetup luksFormat -q --disable-locks --type luks2 \
+        --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --uuid ${uuid} disk.img -
+      mv disk.img $out
+    '';
+  };
+in
 pkgs.testers.runNixOSTest {
   name = "bootmap";
 
   nodes = {
     # No login screen to hand over to: hold the finished graph for a while so
-    # the screenshot can catch it, then exit on our own.
+    # the screenshot can catch it, then exit on our own. A second graphics
+    # card stands in for a second monitor.
     held =
       { pkgs, ... }:
       {
@@ -14,6 +28,35 @@ pkgs.testers.runNixOSTest {
         services.bootmap.holdSeconds = 8;
         services.bootmap.handoverUnits = [ ];
         environment.systemPackages = [ pkgs.jq ];
+        virtualisation.qemu.options = [ "-device virtio-gpu-pci,id=second,xres=1024,yres=768" ];
+      };
+
+    # An encrypted volume to unlock in the initrd: bootmap must show the
+    # passphrase prompt and answer it from the keyboard.
+    luks =
+      { lib, ... }:
+      {
+        imports = [ self.nixosModules.default ];
+        services.bootmap = {
+          enable = true;
+          initrd = true;
+          holdSeconds = 3;
+          handoverUnits = [ ];
+        };
+        boot.initrd.luks.devices = lib.mkVMOverride {
+          secret.device = "/dev/disk/by-uuid/${secret.uuid}";
+        };
+        virtualisation.qemu.drives = [
+          {
+            name = "secret";
+            file = "${secret.image}";
+            driveExtraOpts = {
+              format = "raw";
+              snapshot = "on";
+            };
+          }
+        ];
+        boot.initrd.systemd.services.bootmap.serviceConfig.StandardError = "journal+console";
       };
 
     # Started in the systemd initrd: the same process must follow the boot
@@ -82,7 +125,14 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import subprocess
     import time
+
+    def second_monitor(machine, name):
+        """Screenshot the output of the second graphics card."""
+        ppm = f"{machine.out_dir}/{name}.ppm"
+        machine.send_monitor_command(f"screendump {ppm} second")
+        subprocess.run(f"pnmtopng {ppm} > {machine.out_dir}/{name}.png && rm {ppm}", shell=True, check=True)
 
     # Not start_all(): the initrd machine is booted when its turn comes, because
     # its screenshots must catch short-lived moments of the boot.
@@ -94,12 +144,48 @@ pkgs.testers.runNixOSTest {
         held.sleep(1)
         held.screenshot("bootmap-during-boot")
         held.wait_for_unit("multi-user.target")
+        # Holding the finished graph: on our own VT, so the login prompt that
+        # has started on tty1 does not take the screen back.
+        held.wait_for_unit("getty@tty1.service")
+        held.succeed("test $(cat /sys/class/tty/tty0/active) = tty12")
+        time.sleep(1)
+        held.screenshot("held-after-getty")
+        second_monitor(held, "second-monitor")
+        unit_log = held.succeed("journalctl -b -u bootmap.service --no-pager")
+        assert "bootmap: mirroring to Virtual-2 at 1024x768" in unit_log, unit_log
         held.wait_until_succeeds("test -s /var/log/bootmap/last.json", timeout=60)
         held.succeed("jq -e '.units | length > 20' /var/log/bootmap/last.json")
         held.succeed("jq -e '.phases.finish > 0' /var/log/bootmap/last.json")
         held.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
+        # Done: back on the console's VT, where the login prompt is.
+        held.succeed("test $(cat /sys/class/tty/tty0/active) = tty1")
+        held.screenshot("held-after-exit")
         held.succeed("bootmap render /var/log/bootmap/last.json -o /tmp/final.png")
         held.copy_from_machine("/tmp/final.png", "")
+
+    with subtest("luks: the passphrase prompt is shown and answered from the keyboard"):
+        luks.start()
+        luks.wait_for_console_text("bootmap: asking for a passphrase")
+        time.sleep(1)
+        luks.screenshot("passphrase-prompt")
+        luks.send_chars("not the passphrase\n")
+        luks.wait_for_console_text("bootmap: answered a passphrase request")
+        # cryptsetup rejects it and asks again.
+        luks.wait_for_console_text("bootmap: asking for a passphrase")
+        luks.send_chars("sample")
+        time.sleep(1)
+        luks.screenshot("passphrase-retry")
+        luks.send_chars(" passphrase\n")
+        luks.wait_for_unit("multi-user.target")
+        luks.succeed("test -e /dev/mapper/secret")
+        unit_log = luks.succeed("journalctl -b -u bootmap.service --no-pager")
+        assert unit_log.count("answered a passphrase request") == 2, unit_log
+        # The console agent stayed away without tripping over its condition.
+        whole_log = luks.succeed("journalctl -b --no-pager")
+        assert "Trigger limit hit" not in whole_log
+        luks.fail("systemctl is-failed systemd-ask-password-console.path systemd-ask-password-console.service")
+        luks.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=60)
+        luks.fail("test -e /run/bootmap/agent")
 
     with subtest("initrd: one process follows the boot across switch-root"):
         initrd.start()

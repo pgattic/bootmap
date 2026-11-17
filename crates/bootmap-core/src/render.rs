@@ -186,6 +186,24 @@ pub struct Renderer {
     font: Font,
     text_cache: HashMap<(String, u32, [u8; 3]), Option<Pixmap>>,
     pub opts: RenderOptions,
+    /// A passphrase request to draw over everything else.
+    pub prompt: Option<Prompt>,
+}
+
+/// A passphrase request, as shown to the user.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prompt {
+    /// The question, as the requester worded it.
+    pub message: String,
+    /// What to show in the input field: the text itself, or one dot per character.
+    pub entered: String,
+    /// Shown under the field, e.g. after a wrong passphrase.
+    pub note: Option<String>,
+}
+
+/// The colour behind everything, for filling areas the picture does not cover.
+pub fn background() -> Color {
+    color(BG, 1.0)
 }
 
 /// Unit visual states at time `t`. With `shutdown_from`, units that stop at
@@ -212,7 +230,7 @@ pub fn visuals_at(tl: &BootTimeline, t: Usec, shutdown_from: Option<Usec>) -> Ha
 impl Renderer {
     pub fn new(opts: RenderOptions) -> Self {
         let font = Font::from_bytes(FONT_BYTES, FontSettings::default()).expect("bundled font parses");
-        Self { font, text_cache: HashMap::new(), opts }
+        Self { font, text_cache: HashMap::new(), opts, prompt: None }
     }
 
     /// Rasterize a single line of text into a cached pixmap.
@@ -488,6 +506,64 @@ impl Renderer {
                 self.info_panel(pm, lay, tl, hv, node_vis(hv), t);
             }
         }
+        if let Some(prompt) = self.prompt.clone() {
+            self.draw_prompt(pm, &prompt, wall);
+        }
+    }
+
+    /// The passphrase request: dims the graph and draws a centered panel.
+    fn draw_prompt(&mut self, pm: &mut Pixmap, prompt: &Prompt, wall: f32) {
+        let (w, h) = (pm.width() as f32, pm.height() as f32);
+        let px = (h / 40.0).clamp(14.0, 28.0) * 0.8;
+        let line = px * 1.5;
+        let pad = px * 1.4;
+        if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
+            pm.fill_rect(r, &paint(BG, 0.6), Transform::identity(), None);
+        }
+        let text_w = |me: &mut Self, s: &str, size: f32| me.text(s, size, TEXT).map(|p| p.width() as f32).unwrap_or(0.0);
+        let hint = "Enter to confirm  ·  Esc to start over";
+        let small = px * 0.8;
+        let inner = text_w(self, &prompt.message, px)
+            .max(text_w(self, hint, small))
+            .max(prompt.note.as_deref().map_or(0.0, |n| text_w(self, n, small)))
+            .max(px * 22.0)
+            .min(w - 4.0 * pad);
+        let rows = 3.6 + if prompt.note.is_some() { 1.0 } else { 0.0 };
+        let (bw, bh) = (inner + 2.0 * pad, rows * line + 2.0 * pad);
+        let (bx, by) = ((w - bw) / 2.0, (h - bh) / 2.0);
+        if let Some(r) = Rect::from_xywh(bx, by, bw, bh) {
+            pm.fill_rect(r, &paint(Rgb(0x16, 0x19, 0x22), 0.97), Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(bx, by, bw, 2.0) {
+            pm.fill_rect(r, &paint(ACTIVATING, 1.0), Transform::identity(), None);
+        }
+        let x = bx + pad;
+        let mut y = by + pad + px;
+        self.draw_text(pm, &prompt.message, x, y, px, TEXT);
+
+        // Input field: what was entered (clipped to its tail) and a blinking caret.
+        y += line * 0.6;
+        let field_h = line * 1.1;
+        if let Some(r) = Rect::from_xywh(x, y, inner, field_h) {
+            pm.fill_rect(r, &paint(BG, 1.0), Transform::identity(), None);
+        }
+        let mut shown: &str = &prompt.entered;
+        while text_w(self, shown, px) > inner - px * 1.5 {
+            let Some((i, _)) = shown.char_indices().nth(1) else { break };
+            shown = &shown[i..];
+        }
+        let end = x + px * 0.5 + self.draw_text(pm, shown, x + px * 0.5, y + field_h * 0.5 + px * 0.38, px, TEXT);
+        if (wall * 2.0) as i64 % 2 == 0 {
+            if let Some(r) = Rect::from_xywh(end + 2.0, y + field_h * 0.2, 2.0, field_h * 0.6) {
+                pm.fill_rect(r, &paint(TEXT, 0.9), Transform::identity(), None);
+            }
+        }
+        y += field_h + line * 0.9;
+        if let Some(note) = &prompt.note {
+            self.draw_text(pm, note, x, y, small, FAILED);
+            y += line;
+        }
+        self.draw_text(pm, hint, x, y, small, MUTED);
     }
 
     /// Radial mode: labels run outward along the spoke where the wedge has room.
@@ -812,7 +888,8 @@ impl Renderer {
                 .iter()
                 .skip(1)
                 .filter_map(|n| Some((n.name.as_str(), tl.units.get(&n.name)?.duration()?)))
-                .filter(|(_, d)| *d > 0)
+                // Not bootmap itself: its "start" is the wait for a display.
+                .filter(|(name, d)| *d > 0 && *name != "bootmap.service")
                 .collect();
             slow.sort_by_key(|(_, d)| std::cmp::Reverse(*d));
             for (name, d) in slow.iter().take(8) {

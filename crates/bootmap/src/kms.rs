@@ -1,145 +1,22 @@
-//! Boot-time backend: draw straight to the display with KMS dumb buffers.
+//! Boot-time mode: follow the boot (or a shutdown) live on the display.
 //!
-//! No compositor exists this early, so we open /dev/dri/cardN, become DRM
-//! master, point a CRTC at our own framebuffer and copy each rendered frame
-//! into it. Early in boot the only device may be simpledrm, which disappears
-//! when the real GPU driver loads; in that case we reopen.
+//! Ties together the display (`display`), the virtual terminal we draw on
+//! (`vt`), the password agent (`ask`) and the scene, and follows systemd from
+//! the initrd into the real root.
 
+use crate::ask::Agent;
+use crate::display::Display;
 use crate::live::{Scene, Source};
+use crate::vt::Vt;
 use crate::GraphArgs;
 use anyhow::{Context, Result};
-use drm::buffer::{Buffer, DrmFourcc};
-use drm::control::{connector, crtc, dumbbuffer::DumbBuffer, framebuffer, Device as ControlDevice, Mode};
-use drm::Device;
-use std::fs::{File, OpenOptions};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::collections::HashSet;
+use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-struct Card(File, PathBuf);
-impl AsFd for Card {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
-    }
-}
-impl Device for Card {}
-impl ControlDevice for Card {}
-
-struct Output {
-    card: Card,
-    conn: connector::Handle,
-    crtc: crtc::Handle,
-    saved: crtc::Info,
-    db: Option<DumbBuffer>,
-    fb: framebuffer::Handle,
-    size: (u32, u32),
-    dirty_warned: bool,
-}
-
-impl Output {
-    fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let card = Card(file, path.to_path_buf());
-        let _ = card.acquire_master_lock();
-        let res = card.resource_handles().context("not a KMS device")?;
-        let (conn, mode) = res
-            .connectors()
-            .iter()
-            .filter_map(|&c| card.get_connector(c, true).ok())
-            .filter(|i| i.state() == connector::State::Connected && !i.modes().is_empty())
-            .map(|i| (i.handle(), preferred_mode(i.modes())))
-            .next()
-            .context("no connected display")?;
-        let info = card.get_connector(conn, false)?;
-        let crtc = info
-            .current_encoder()
-            .and_then(|e| card.get_encoder(e).ok())
-            .and_then(|e| e.crtc())
-            .or_else(|| {
-                info.encoders().iter().filter_map(|&e| card.get_encoder(e).ok()).find_map(|e| {
-                    res.filter_crtcs(e.possible_crtcs()).into_iter().next()
-                })
-            })
-            .context("no usable CRTC")?;
-        let saved = card.get_crtc(crtc)?;
-        let (w, h) = mode.size();
-        let size = (w as u32, h as u32);
-        let db = card.create_dumb_buffer(size, DrmFourcc::Xrgb8888, 32)?;
-        let fb = card.add_framebuffer(&db, 24, 32)?;
-        card.set_crtc(crtc, Some(fb), (0, 0), &[conn], Some(mode)).context("set_crtc")?;
-        eprintln!("bootmap: drawing on {} at {}x{}", path.display(), size.0, size.1);
-        Ok(Self { card, conn, crtc, saved, db: Some(db), fb, size, dirty_warned: false })
-    }
-
-    fn present(&mut self, pm: &tiny_skia::Pixmap) -> Result<()> {
-        let db = self.db.as_mut().context("buffer released")?;
-        let pitch = db.pitch() as usize;
-        let (w, h) = (self.size.0 as usize, self.size.1 as usize);
-        {
-            let mut map = self.card.map_dumb_buffer(db)?;
-            let dst = map.as_mut();
-            let src = pm.data();
-            for y in 0..h {
-                let s = &src[y * w * 4..(y + 1) * w * 4];
-                let d = &mut dst[y * pitch..y * pitch + w * 4];
-                for (dp, sp) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
-                    // RGBA (opaque) -> XRGB8888 little endian = B, G, R, X
-                    dp[0] = sp[2];
-                    dp[1] = sp[1];
-                    dp[2] = sp[0];
-                    dp[3] = 0xff;
-                }
-            }
-        }
-
-        // One full-screen clip: an empty list is rejected with EINVAL
-        // (the kernel wants num_clips and clips_ptr both zero or both set).
-        let full = drm::control::ClipRect::new(0, 0, self.size.0.min(u16::MAX as u32) as u16, self.size.1.min(u16::MAX as u32) as u16);
-        if let Err(e) = self.card.dirty_framebuffer(self.fb, &[full]) {
-            // ENOSYS: the driver scans out the buffer directly and needs no flush.
-            if !self.dirty_warned && e.raw_os_error() != Some(38) {
-                eprintln!("bootmap: dirty_framebuffer: {e}");
-                self.dirty_warned = true;
-            }
-        }
-        Ok(())
-    }
-
-    /// The card node vanished while its directory is still there. If
-    /// `/dev/dri` itself is missing (`/dev` moved away in the switch to the
-    /// real root, before we chroot), the device was not replaced.
-    fn gone(&self) -> bool {
-        !self.card.1.exists() && self.card.1.parent().is_some_and(|d| d.exists())
-    }
-}
-
-impl Drop for Output {
-    fn drop(&mut self) {
-        let _ = self.card.set_crtc(
-            self.crtc,
-            self.saved.framebuffer(),
-            self.saved.position(),
-            &[self.conn],
-            self.saved.mode(),
-        );
-        let _ = self.card.destroy_framebuffer(self.fb);
-        if let Some(db) = self.db.take() {
-            let _ = self.card.destroy_dumb_buffer(db);
-        }
-        let _ = self.card.release_master_lock();
-    }
-}
-
-
-fn preferred_mode(modes: &[Mode]) -> Mode {
-    modes
-        .iter()
-        .find(|m| m.mode_type().contains(drm::control::ModeTypeFlags::PREFERRED))
-        .copied()
-        .unwrap_or(modes[0])
-}
 
 /// Signal flags. Installed first thing in `bootmap boot`: SIGUSR1's default
 /// action is to terminate, so it must be caught before anything slow runs.
@@ -170,32 +47,21 @@ impl Signals {
     }
 }
 
-/// Try every card, preferring ones that are not simpledrm. Returns None if no
-/// display shows up before `deadline`, or if we are asked to stop or release
-/// while waiting (then there is nothing to draw on, but still a boot to record).
-fn open_any(deadline: Instant, sig: &Signals) -> Option<Output> {
-    let mut seen = std::collections::HashSet::new();
+/// Wait for a display. Returns None if none shows up before `deadline`, or if
+/// we are asked to stop or release while waiting (then there is nothing to
+/// draw on, but still a boot to record). `seen` keeps each distinct problem
+/// from being logged more than once across retries.
+fn open_display(deadline: Instant, sig: &Signals, seen: &mut HashSet<String>) -> Option<Display> {
     loop {
-        let mut cards: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
-            .map(|rd| {
-                rd.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("card")))
-                    .collect()
-            })
-            .unwrap_or_default();
-        cards.sort_by_key(|p| (is_simpledrm(p), p.file_name().unwrap_or_default().len(), p.clone()));
-        for c in &cards {
-            match Output::open(c) {
-                Ok(o) => return Some(o),
-                Err(e) => {
-                    // Retried every 100 ms: log each distinct reason once.
-                    let msg = format!("{}: {e:#}", c.display());
-                    if seen.insert(msg.clone()) {
-                        eprintln!("bootmap: {msg}");
-                    }
-                }
+        let mut problems = vec![];
+        let display = Display::open(&mut problems);
+        for p in problems {
+            if seen.insert(p.clone()) {
+                eprintln!("bootmap: {p}");
             }
+        }
+        if display.is_some() {
+            return display;
         }
         if sig.stopped() || sig.released() {
             return None;
@@ -208,19 +74,7 @@ fn open_any(deadline: Instant, sig: &Signals) -> Option<Output> {
     }
 }
 
-fn is_simpledrm(card: &Path) -> bool {
-    let name = card.file_name().unwrap_or_default().to_string_lossy().to_string();
-    std::fs::read_link(format!("/sys/class/drm/{name}/device/driver"))
-        .map(|d| d.to_string_lossy().contains("simple"))
-        .unwrap_or(false)
-}
-
-/// Put a VT in graphics mode so the console cursor/text stays hidden.
-struct VtGraphics(Option<File>);
-const KDSETMODE: u64 = 0x4B3A;
-const VT_ACTIVATE: u64 = 0x5606;
 extern "C" {
-    fn ioctl(fd: i32, req: u64, ...) -> i32;
     fn fchdir(fd: i32) -> i32;
     fn chroot(path: *const std::ffi::c_char) -> i32;
 }
@@ -254,35 +108,6 @@ fn enter_root(fd: &File) -> std::io::Result<()> {
     }
     std::env::set_current_dir("/")
 }
-impl VtGraphics {
-    /// `switch_to: None` uses the VT in front. `Some(n)` brings VT `n` to
-    /// the front first: a running compositor then loses its VT, and with it
-    /// DRM master, which is how we get the display back at shutdown.
-    fn enter(switch_to: Option<u32>) -> Self {
-        let path = match switch_to {
-            Some(n) => format!("/dev/tty{n}"),
-            None => "/dev/tty0".to_string(),
-        };
-        let f = OpenOptions::new().read(true).write(true).open(path).ok();
-        if let Some(f) = &f {
-            if let Some(n) = switch_to {
-                // SAFETY: VT_ACTIVATE takes the VT number as an int argument.
-                unsafe { ioctl(f.as_raw_fd(), VT_ACTIVATE, n as i32) };
-            }
-            // SAFETY: KDSETMODE takes an int argument; 1 = KD_GRAPHICS.
-            unsafe { ioctl(f.as_raw_fd(), KDSETMODE, 1i32) };
-        }
-        Self(f)
-    }
-}
-impl Drop for VtGraphics {
-    fn drop(&mut self) {
-        if let Some(f) = &self.0 {
-            // SAFETY: as above; 0 = KD_TEXT.
-            unsafe { ioctl(f.as_raw_fd(), KDSETMODE, 0i32) };
-        }
-    }
-}
 
 fn sd_notify(msg: &str) {
     let Ok(path) = std::env::var("NOTIFY_SOCKET") else { return };
@@ -307,35 +132,139 @@ fn save(record: &Path, scene: &Scene) {
     }
 }
 
+/// What to do about passphrase requests while we have the screen.
+#[derive(Clone, Copy, PartialEq)]
+enum Prompts {
+    /// Be the password agent: show the prompt and answer from the keyboard.
+    Answer,
+    /// Not a boot (a replay, the shutdown view): nothing will ask.
+    Ignore,
+    /// systemd's console agent is in charge (we got the display too late to
+    /// keep it away): if anything asks, give the screen back so its prompt
+    /// can be seen.
+    Yield,
+}
+
+/// The screen and keyboard, held together: the display, the VT in front of
+/// it, and (during a boot) the password agent that uses both.
+///
+/// systemd's console password agent would read from the same terminal and
+/// take keystrokes meant for our prompt. While `marker` exists it is not
+/// started: the NixOS module orders its path unit after bootmap.service and
+/// gives it that condition, the arrangement it has with Plymouth.
+struct Console {
+    // Field order is drop order: give up the display before the VT.
+    display: Option<Display>,
+    vt: Option<Vt>,
+    agent: Option<Agent>,
+    prompts: Prompts,
+    marker: PathBuf,
+}
+
+impl Console {
+    /// `display` is already open. `vt` may have been entered earlier (the
+    /// shutdown view switches first, to make a compositor let go).
+    fn new(display: Display, vt: Option<Vt>, vt_number: u32, prompts: Prompts, marker: PathBuf) -> Self {
+        // Yielding to the console agent means staying off the keyboard, and
+        // the VT is where the keyboard goes.
+        let vt = match prompts {
+            Prompts::Yield => None,
+            _ => vt.or_else(|| Vt::enter(vt_number)),
+        };
+        let agent = (prompts == Prompts::Answer && vt.is_some()).then(Agent::new);
+        if agent.is_some() {
+            if let Some(dir) = marker.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&marker, b"");
+        }
+        Self { display: Some(display), vt, agent, prompts, marker }
+    }
+
+    fn present(&mut self, pm: &tiny_skia::Pixmap) -> Result<()> {
+        self.display.as_mut().context("no display")?.present(pm)
+    }
+
+    fn display_gone(&self) -> bool {
+        self.display.as_ref().is_some_and(Display::gone)
+    }
+
+    /// Read the keyboard and look for password requests; returns the prompt to draw.
+    fn prompt(&mut self) -> Option<bootmap_core::render::Prompt> {
+        let agent = self.agent.as_mut()?;
+        let mut keys = [0u8; 64];
+        let n = self.vt.as_mut().map_or(0, |vt| vt.read_keys(&mut keys));
+        agent.poll();
+        agent.keys(&keys[..n]);
+        keys.fill(0);
+        agent.prompt()
+    }
+
+    /// Someone is asking for a passphrase and it is not ours to answer.
+    fn must_yield(&self) -> bool {
+        self.prompts == Prompts::Yield && crate::ask::pending()
+    }
+}
+
+impl Drop for Console {
+    fn drop(&mut self) {
+        if self.agent.is_some() {
+            let _ = std::fs::remove_file(&self.marker);
+        }
+    }
+}
+
 /// How long to keep listening (off-screen) after releasing the display, for
 /// the rest of the boot to finish so the recording is complete.
 const RECORD_AFTER_RELEASE: Duration = Duration::from_secs(60);
 
-/// `shutdown_vt`: Some(n) runs the shutdown view on VT `n` instead of following a boot.
-pub fn run(
-    sig: Signals,
-    mut source: Source,
-    graph: GraphArgs,
-    record: PathBuf,
-    hold: f32,
-    released_marker: PathBuf,
-    shutdown_vt: Option<u32>,
-) -> Result<()> {
-    let shutdown = shutdown_vt.is_some();
+pub struct BootOptions {
+    /// Where to save the recorded timeline once the boot finishes.
+    pub record: PathBuf,
+    /// Keep showing the finished graph this many seconds (0 = until stopped).
+    pub hold: f32,
+    /// File created once the display is released (on SIGUSR1). Its directory
+    /// also holds the marker that keeps the console password agent away.
+    pub released_marker: PathBuf,
+    /// Follow a shutdown instead of a boot.
+    pub shutdown: bool,
+    /// Virtual terminal to draw on.
+    pub vt: u32,
+}
+
+pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions) -> Result<()> {
+    let BootOptions { record, hold, released_marker, shutdown, vt: vt_number } = opts;
     let shutdown_from = shutdown.then(|| source.begin_shutdown());
     // A shutdown is not a boot recording: never overwrite the saved timeline.
     let replay = shutdown || matches!(source.mode, crate::live::Mode::Replay { .. });
     let mut scene = Scene::new(source, &graph);
     scene.renderer.opts.shutdown_from = shutdown_from;
-    let mut vt = Some(VtGraphics::enter(shutdown_vt));
-    // At shutdown the compositor may take a moment to let go of the display.
-    let wait = Duration::from_secs(if shutdown { 30 } else { 20 });
-    let mut out = open_any(Instant::now() + wait, &sig);
-    if shutdown && out.is_some() {
+    let agent_marker = released_marker.with_file_name("agent");
+
+    // At shutdown a compositor holds the display: switching to our VT first
+    // makes it let go, which may take a moment. During a boot the VT is only
+    // taken once there is a display, so a machine without one keeps its
+    // text console.
+    let early_vt = if shutdown { Vt::enter(vt_number) } else { None };
+    let prompts = if replay { Prompts::Ignore } else { Prompts::Answer };
+    let mut seen = HashSet::new();
+    // During a boot, systemd holds its console password agent back until we
+    // report ready, so that wait is kept short.
+    let first_wait = Duration::from_secs(if shutdown { 30 } else { 3 });
+    let mut console = open_display(Instant::now() + first_wait, &sig, &mut seen)
+        .map(|d| Console::new(d, early_vt, vt_number, prompts, agent_marker.clone()));
+    if shutdown && console.is_some() {
         eprintln!("bootmap: showing shutdown");
     }
     sd_notify("READY=1");
-    let size = out.as_ref().map(|o| o.size).unwrap_or((1, 1));
+    if console.is_none() && !shutdown && !sig.stopped() && !sig.released() {
+        // A display may still show up (a driver that loads late), but the
+        // console agent is in charge of passphrases from here on.
+        let late = if replay { Prompts::Ignore } else { Prompts::Yield };
+        console = open_display(Instant::now() + Duration::from_secs(17), &sig, &mut seen)
+            .map(|d| Console::new(d, None, vt_number, late, agent_marker.clone()));
+    }
+    let size = console.as_ref().and_then(|c| c.display.as_ref()).map(Display::size).unwrap_or((1, 1));
     let mut pm = tiny_skia::Pixmap::new(size.0, size.1).context("pixmap")?;
     let frame = Duration::from_millis(33);
     let mut saved = false;
@@ -349,41 +278,54 @@ pub fn run(
     while !sig.stopped() {
         let t0 = Instant::now();
 
-        if released_at.is_none() && sig.released() {
-            // Restore the console's CRTC, drop DRM master and leave graphics
-            // mode, then tell bootmap-quit the display is free.
-            drop(out.take());
-            drop(vt.take());
+        let yielding = console.as_ref().is_some_and(Console::must_yield);
+        if released_at.is_none() && (sig.released() || yielding) {
+            // Restore the text console's CRTC, drop DRM master, go back to the VT
+            // that was in front, then tell bootmap-quit the display is free.
+            drop(console.take());
+            scene.renderer.prompt = None;
             if let Some(dir) = released_marker.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
             let _ = std::fs::write(&released_marker, b"");
+            if yielding {
+                eprintln!("bootmap: a passphrase is being asked for on the console; getting out of its way");
+            }
             eprintln!("bootmap: released display; recording until boot finishes");
             released_at = Some(Instant::now());
         }
 
-        match &mut out {
-            Some(o) => {
+        let mut display_lost = false;
+        match &mut console {
+            Some(c) => {
+                scene.renderer.prompt = c.prompt();
                 scene.frame(&mut pm);
-                let res = o.present(&pm);
+                let res = c.present(&pm);
                 if frames == 0 {
                     eprintln!("bootmap: first frame in {:?} ({:?})", t0.elapsed(), res.as_ref().err());
                 }
                 frames += 1;
-                if res.is_err() || (last_check.elapsed() > Duration::from_millis(500) && o.gone()) {
-                    // The device went away (simpledrm handed over to the real driver).
+                if res.is_err() || (last_check.elapsed() > Duration::from_millis(500) && c.display_gone()) {
+                    // The device went away (simpledrm handed over to the real
+                    // driver). Let go of the old one first, then take the new
+                    // one; the VT and a half-typed passphrase stay.
                     last_check = Instant::now();
-                    drop(out.take());
-                    let Some(o) = open_any(Instant::now() + Duration::from_secs(10), &sig) else { continue };
-                    pm = tiny_skia::Pixmap::new(o.size.0, o.size.1).context("pixmap")?;
-                    out = Some(o);
-                    continue;
+                    c.display = None;
+                    c.display = open_display(Instant::now() + Duration::from_secs(10), &sig, &mut seen);
+                    match c.display.as_ref().map(Display::size) {
+                        Some((w, h)) => pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?,
+                        None => display_lost = true,
+                    }
                 }
             }
             None => {
                 // Headless: just keep collecting events.
                 scene.source.poll();
             }
+        }
+        if display_lost {
+            console = None;
+            scene.renderer.prompt = None;
         }
 
         if let Some(done) = scene.source.finished_for().filter(|_| !shutdown) {
@@ -392,7 +334,7 @@ pub fn run(
                 saved = true;
             }
             // Done once released or headless (nothing left to show), or after the hold.
-            if released_at.is_some() || out.is_none() || (hold > 0.0 && done >= hold) {
+            if released_at.is_some() || console.is_none() || (hold > 0.0 && done >= hold) {
                 break;
             }
         }
@@ -426,7 +368,7 @@ pub fn run(
             in_initrd = false;
             scene.source.reconnect();
         }
-        let pace = if out.is_some() { frame } else { Duration::from_millis(100) };
+        let pace = if console.is_some() { frame } else { Duration::from_millis(100) };
         std::thread::sleep(pace.saturating_sub(t0.elapsed()));
     }
     // Never write a recording from inside the initrd.

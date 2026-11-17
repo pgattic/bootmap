@@ -177,6 +177,7 @@ dependencies = [
  "bootmap-core",
  "clap",
  "drm",
+ "libc",
  "signal-hook",
  "softbuffer",
  "tiny-skia",

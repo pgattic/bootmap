@@ -94,8 +94,29 @@ used by the layout and physics tests.
 
 - talks to PID 1 over its private socket `/run/systemd/private`, because dbus
   isn't running yet;
-- takes over the display with KMS dumb buffers and puts the VT in graphics mode;
+- takes over the display with KMS dumb buffers;
 - reopens the display if simpledrm hands over to the real GPU driver.
+
+**Monitors.** It draws on every connected output. The picture is rendered
+once, at the size of the built-in panel (or the largest output when there is
+none), and scaled to fit the others. Outputs connected after it has started
+are not picked up.
+
+**Its own virtual terminal.** It draws on tty12 (`bootmap boot --vt`) and goes
+back to the terminal that was in front when it is done. On the console's own
+terminal, a login prompt starting there would put the text console back on
+screen while bootmap is still drawing.
+
+**Passphrases.** While it has the screen, bootmap is a systemd
+[password agent](https://systemd.io/PASSWORD_AGENTS/). A request, such as
+unlocking an encrypted disk, is shown over the graph and answered from the
+keyboard: Enter confirms, Esc or Ctrl-U starts over. A wrong passphrase is
+asked for again. systemd's console agent would read the same keyboard, so it
+is left out while bootmap handles prompts, the way it is for Plymouth: its
+path unit is ordered after `bootmap.service` (`Type=notify`, ready once it has
+the display or after 3 s without one) and skipped while `/run/bootmap/agent`
+exists. If bootmap has no display by then, the console agent runs as usual,
+and bootmap gives the screen back as soon as something asks for a passphrase.
 
 With `services.bootmap.initrd = true` it starts in the systemd initrd instead,
 so the picture begins well under a second into the boot. The same process
@@ -110,10 +131,11 @@ follows the boot into the real system:
   connection drops, it does `fchdir`, `chroot` and `chdir` into that directory,
   reconnects to the new PID 1 and keeps drawing on the same display.
 
-This needs `boot.initrd.systemd.enable`. Passphrase prompts (LUKS) are not
-supported yet: bootmap would hide them, so the module asserts against LUKS
-devices. The recording then includes the initrd, and `bootmap render --at -1`
-shows a frame from it (`--at` counts seconds after userspace start).
+This needs a systemd initrd, which current NixOS always uses (on older
+releases, set `boot.initrd.systemd.enable`). An encrypted root is unlocked
+from bootmap's passphrase prompt. The recording then includes the initrd, and
+`bootmap render --at -1` shows a frame from it (`--at` counts seconds after
+userspace start).
 
 When the boot finishes it saves the timeline to `/var/log/bootmap/last.json`,
 so you can replay it later with `bootmap view`.
@@ -124,7 +146,8 @@ It keeps drawing until just before the login screen starts (the units in
 `plymouth-quit`, signals bootmap to release the display and waits until it
 has. bootmap then keeps recording off-screen until the boot finishes, so the
 saved timeline is complete. With `handoverUnits = [ ]` it keeps drawing and
-exits `holdSeconds` after the boot finishes instead.
+exits `holdSeconds` after the boot finishes instead; a text login prompt is
+then waiting on the console's terminal when it switches back.
 
 At shutdown or reboot, `bootmap-shutdown.service` (pulled in by
 `shutdown.target`) brings the graph back. It switches to its own virtual
@@ -145,16 +168,26 @@ nix develop -c cargo test                     # layout tests on the sample boot
 nix build .#checks.aarch64-linux.vm -L        # boots a NixOS VM with the module
 ```
 
-The VM test boots three machines. One has no login screen and checks that
-bootmap draws during boot and saves a complete recording. The second starts
-bootmap in the systemd initrd and checks that the same process survives the
-switch to the real root, on the same display, and that the recording includes
-the initrd. The third runs a Wayland compositor as its greeter (with bootmap
-also started in the initrd) and checks the handover to it, and that the
-shutdown view takes the display back from it. It leaves QEMU screenshots in
-`result/`: `bootmap-during-boot.png`, `initrd.png`, `after-switch.png`,
-`greeter.png` and `shutdown.png`, plus `final.png`, `replay-initrd.png` and
-`final-initrd.png`, renders of the finished recordings.
+The VM test boots four machines:
+
+- `held` has no login screen and a second graphics card standing in for a
+  second monitor. It checks that bootmap draws during boot, mirrors to the
+  second output, keeps the finished graph up on tty12 while a login prompt
+  runs on tty1, goes back to tty1 afterwards, and saves a complete recording.
+- `luks` has an encrypted volume to unlock in the initrd. It types a wrong
+  passphrase, then the right one, into bootmap's prompt, and checks that the
+  volume is open and that the console agent stayed out without failing.
+- `initrd` starts bootmap in the systemd initrd and checks that the same
+  process survives the switch to the real root, on the same display, and that
+  the recording includes the initrd.
+- `greeter` runs a Wayland compositor as its greeter (with bootmap also
+  started in the initrd) and checks the handover to it, and that the shutdown
+  view takes the display back from it.
+
+It leaves QEMU screenshots in `result/` (`bootmap-during-boot.png`,
+`held-after-getty.png`, `second-monitor.png`, `passphrase-prompt.png`,
+`passphrase-retry.png`, `initrd.png`, `after-switch.png`, `greeter.png`,
+`shutdown.png` and others), plus renders of the finished recordings.
 
 ## Notes on systemd's private socket
 
@@ -172,6 +205,8 @@ Two quirks found while testing, as of systemd 262:
 
 ```
 crates/bootmap-core   model (JSON timeline), systemd client, radial layout, tiny-skia renderer
-crates/bootmap        CLI: capture / render / view (winit+softbuffer) / boot (KMS)
+crates/bootmap        CLI: capture / render / view (winit+softbuffer) / boot
+                      (kms: main loop, display: KMS outputs, vt: terminal and
+                      keyboard, ask: password agent)
 nix/                  package, NixOS module, VM test
 ```

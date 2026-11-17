@@ -7,7 +7,13 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 #[cfg(feature = "drm")]
+mod ask;
+#[cfg(feature = "drm")]
+mod display;
+#[cfg(feature = "drm")]
 mod kms;
+#[cfg(feature = "drm")]
+mod vt;
 mod live;
 #[cfg(feature = "window")]
 mod window;
@@ -122,9 +128,10 @@ enum Cmd {
         /// units stopping until systemd hands over to the final shutdown stage.
         #[arg(long)]
         shutdown: bool,
-        /// Virtual terminal the shutdown view switches to.
+        /// Virtual terminal to draw on. Not the console's, so that a login
+        /// prompt starting there does not take the screen back.
         #[arg(long, default_value_t = 12)]
-        shutdown_vt: u32,
+        vt: u32,
         /// File created once the display is released (on SIGUSR1).
         #[arg(long, default_value = "/run/bootmap/released")]
         released_marker: PathBuf,
@@ -183,14 +190,14 @@ fn main() -> Result<()> {
             window::run(source, graph)?;
         }
         #[cfg(feature = "drm")]
-        Cmd::Boot { record, hold, replay, shutdown, shutdown_vt, released_marker, graph } => {
+        Cmd::Boot { record, hold, replay, shutdown, vt, released_marker, graph } => {
             // Before anything slow: an early SIGUSR1 would otherwise kill us.
             let sig = kms::Signals::install()?;
             let source = match replay {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, 1.0),
                 None => live::Source::live()?,
             };
-            kms::run(sig, source, graph, record, hold, released_marker, shutdown.then_some(shutdown_vt))?;
+            kms::run(sig, source, graph, kms::BootOptions { record, hold, released_marker, shutdown, vt })?;
         }
     }
     Ok(())

@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = ["window", "drm"]
 window = ["dep:winit", "dep:softbuffer"]
-drm = ["dep:drm", "dep:signal-hook"]
+drm = ["dep:drm", "dep:signal-hook", "dep:libc"]
 
 [dependencies]
 bootmap-core = { path = "../bootmap-core" }
@@ -18,3 +18,4 @@ winit = { version = "0.30", optional = true }
 softbuffer = { version = "0.4", optional = true }
 drm = { version = "0.14", optional = true }
 signal-hook = { version = "0.3", optional = true }
+libc = { version = "0.2", optional = true }
