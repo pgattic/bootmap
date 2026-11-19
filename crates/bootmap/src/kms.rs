@@ -87,7 +87,19 @@ impl DisplaySearch {
         }
         if display.is_none() && !self.reported && now.duration_since(self.started) >= Self::NOTICE {
             self.reported = true;
-            eprintln!("bootmap: no usable display yet; recording, and still looking");
+            let cards = std::fs::read_dir("/dev/dri")
+                .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("card")).count())
+                .unwrap_or(0);
+            if cards == 0 {
+                eprintln!(
+                    "bootmap: no graphics device yet (no /dev/dri/card*): the graphics driver has not loaded, \
+                     or does not support kernel modesetting (NVIDIA needs nvidia-drm.modeset=1); recording, and still looking"
+                );
+            } else {
+                eprintln!(
+                    "bootmap: {cards} graphics device(s), none usable (reasons above); recording, and still looking"
+                );
+            }
         }
         display
     }

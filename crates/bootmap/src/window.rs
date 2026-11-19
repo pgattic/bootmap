@@ -201,7 +201,7 @@ impl App {
         };
         self.scene.frame(pm);
         let Ok(mut buf) = surface.buffer_mut() else { return };
-        for (dst, px) in buf.iter_mut().zip(pm.data().chunks_exact(4)) {
+        for (dst, px) in buf.iter_mut().zip(pm.data().as_chunks::<4>().0) {
             // Background is opaque, so premultiplied == straight here.
             *dst = (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32;
         }

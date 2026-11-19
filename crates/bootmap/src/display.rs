@@ -103,7 +103,7 @@ impl Head {
             for y in 0..h {
                 let s = &src[y * w * 4..(y + 1) * w * 4];
                 let d = &mut dst[y * pitch..y * pitch + w * 4];
-                for (dp, sp) in d.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
+                for (dp, sp) in d.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
                     // RGBA (opaque) -> XRGB8888 little endian = B, G, R, X
                     dp[0] = sp[2];
                     dp[1] = sp[1];

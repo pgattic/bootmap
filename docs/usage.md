@@ -164,6 +164,11 @@ At boot, bootmap draws on every connected monitor. The picture is laid out for
 the built-in panel (or the largest monitor) and scaled to fit the others.
 Monitors plugged in after bootmap has started are not picked up.
 
+On machines with two graphics chips (hybrid graphics), bootmap uses the
+monitors of both. A laptop docked with its lid closed counts as having a
+built-in panel if the panel still reports being connected; the picture is then
+laid out for the panel and scaled onto the external monitor.
+
 Text and dots keep the same physical size on any screen, so a high-resolution
 laptop panel shows the same picture as a regular monitor, only sharper. In the
 viewer, sizes follow your desktop's scale setting.
@@ -262,7 +267,9 @@ journalctl -b -u bootmap.service
 
 | Symptom | Likely cause |
 |---|---|
-| Nothing shows at boot; the log says `no usable display yet` | No graphics driver this early. It appears once the driver loads; for an earlier picture, see [starting in the initrd](#starting-in-the-initrd). |
+| Nothing shows at first; the log says `no graphics device yet` | No graphics driver this early. The graph appears once the driver loads (the log then says `drawing on`); for an earlier picture, see [starting in the initrd](#starting-in-the-initrd). |
+| Nothing shows at all on an NVIDIA machine | The proprietary driver only offers the screen to programs like bootmap with kernel modesetting: set `hardware.nvidia.modesetting.enable = true;` (the default with driver 535 or newer), which adds `nvidia-drm.modeset=1`. |
+| The log says `graphics device(s), none usable` | A driver is loaded, but bootmap could not use any output; the lines just above it in the log say why for each one (for example, no monitor connected). |
 | The graph shows briefly, then the login screen | Expected: bootmap steps aside for your login screen. Replay the boot with `bootmap view /var/log/bootmap/last.json`. |
 | The build fails mentioning Plymouth | Disable `boot.plymouth.enable`; both want the screen. |
 | `bootmap view` fails to open a window | It needs a running desktop (Wayland or X11). |

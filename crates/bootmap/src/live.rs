@@ -80,6 +80,14 @@ impl Source {
                     }
                     u.job = true;
                 }
+                Ok(LiveMsg::JobDone(name)) => {
+                    if let Some(u) = self.tl.units.get_mut(&name) {
+                        // Never started: it leaves the graph (layouts only
+                        // keep units that started or still have a job).
+                        structural |= u.job && u.t_activating.is_none();
+                        u.job = false;
+                    }
+                }
                 Ok(LiveMsg::Event(ev)) => {
                     let first_start = self.tl.units.get(&ev.unit).is_none_or(|u| u.t_activating.is_none());
                     // Timestamps feed the layout ordering; re-layout on first start.
@@ -390,5 +398,49 @@ impl Stats {
             );
             *self = Stats::default();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bootmap_core::{Event, UnitState};
+    use std::sync::mpsc;
+
+    fn live_source() -> (Source, mpsc::Sender<LiveMsg>) {
+        let (tx, rx) = mpsc::channel();
+        let src = Source { tl: BootTimeline::default(), mode: Mode::Live { rx, finished_at: None, disconnected: false } };
+        (src, tx)
+    }
+
+    fn in_graph(src: &Source, unit: &str) -> bool {
+        Layout::compute(&src.tl, &LayoutOptions::default()).index.contains_key(unit)
+    }
+
+    #[test]
+    fn a_skipped_job_is_no_longer_pending() {
+        // systemd queues the job, then skips it (unmet condition): JobNew, JobRemoved.
+        let (mut src, tx) = live_source();
+        let unit = "modprobe@configfs.service";
+        tx.send(LiveMsg::Job(unit.into())).unwrap();
+        assert!(src.poll(), "a newly queued unit joins the graph");
+        assert!(in_graph(&src, unit));
+        tx.send(LiveMsg::JobDone(unit.into())).unwrap();
+        assert!(src.poll(), "and leaves it when its job is skipped");
+        assert!(!src.tl.units[unit].job);
+        assert!(!in_graph(&src, unit));
+    }
+
+    #[test]
+    fn a_job_that_ran_keeps_its_unit() {
+        let (mut src, tx) = live_source();
+        let unit = "systemd-sysctl.service";
+        tx.send(LiveMsg::Job(unit.into())).unwrap();
+        tx.send(LiveMsg::Event(Event { t: 100, unit: unit.into(), state: UnitState::Activating })).unwrap();
+        tx.send(LiveMsg::Event(Event { t: 200, unit: unit.into(), state: UnitState::Active })).unwrap();
+        src.poll();
+        tx.send(LiveMsg::JobDone(unit.into())).unwrap();
+        assert!(!src.poll(), "a finished job changes nothing structural");
+        assert!(in_graph(&src, unit));
     }
 }

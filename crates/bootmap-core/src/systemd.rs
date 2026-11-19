@@ -49,8 +49,10 @@ type ListUnitsRow = (
 pub enum LiveMsg {
     /// A unit we had not seen before (deps included).
     UnitNew(Unit),
-    /// A start job was queued for this unit.
+    /// A job was queued for this unit.
     Job(String),
+    /// The unit's job is gone: done, or skipped (e.g. an unmet condition).
+    JobDone(String),
     Event(Event),
     /// `StartupFinished` was emitted.
     Finished(Phases),
@@ -289,6 +291,12 @@ impl Systemd {
                     }
                 }
                 out.push(LiveMsg::Job(name));
+            }
+            "JobRemoved" => {
+                // (id, job, unit, result). A job skipped for an unmet
+                // condition leaves its unit inactive: it is no longer pending.
+                let Ok((_id, _job, name, _result)) = msg.read4::<u32, DPath, String, String>() else { return out };
+                out.push(LiveMsg::JobDone(name));
             }
             "PropertiesChanged" => {
                 let Ok((iface, changed, _inval)) = msg.read3::<String, PropMap, Vec<String>>() else { return out };

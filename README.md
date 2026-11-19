@@ -1,5 +1,7 @@
 # bootmap
 
+[![CI](https://github.com/pgattic/bootmap/actions/workflows/ci.yml/badge.svg)](https://github.com/pgattic/bootmap/actions/workflows/ci.yml)
+
 **Watch your Linux system boot, as a living graph.**
 
 ![bootmap following a boot, from the initrd to the finished system](docs/demo/boot.gif)

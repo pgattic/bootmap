@@ -204,6 +204,8 @@ pkgs.testers.runNixOSTest {
         held.wait_until_succeeds("test -s /var/log/bootmap/last.json", timeout=60)
         held.succeed("jq -e '.units | length > 20' /var/log/bootmap/last.json")
         held.succeed("jq -e '.phases.finish > 0' /var/log/bootmap/last.json")
+        # Jobs that systemd skipped (unmet conditions) must not stay "pending".
+        held.succeed("jq -e '[.units[] | select(.job == true and .t_activating == null)] | length == 0' /var/log/bootmap/last.json")
         held.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
         # Done: back on the console's VT, where the login prompt is.
         held.succeed("test $(cat /sys/class/tty/tty0/active) = tty1")

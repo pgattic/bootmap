@@ -94,6 +94,18 @@ configuration with the misspelled key `tehme` and uses `testers.testBuildFailure
 to assert that building the checked file fails and that the log names the key.
 It needs the package to build, but no VM.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | Runs on | Checks |
+|---|---|---|
+| Clippy | x86_64 | `cargo clippy` on all four build variants (default, `drm`, `window`, `tools`), warnings are errors. |
+| Build and unit tests | x86_64 and aarch64 | Both packages (building them runs the unit tests) and the `bad-config` check. |
+| NixOS VM test | x86_64, with KVM | The full VM test. Its screenshots are kept as a build artifact. |
+
+The aarch64 VM test is not in CI; run it locally on an aarch64 machine.
+
 ## Debugging
 
 | Variable | Effect |
