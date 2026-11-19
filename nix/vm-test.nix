@@ -12,6 +12,11 @@ let
       mv disk.img $out
     '';
   };
+
+  # A round logo for the center of the graph, built here to stay out of the repo.
+  logo =
+    pkgs.runCommand "logo.png" { nativeBuildInputs = [ pkgs.imagemagick ]; }
+      "magick -size 256x256 xc:none -fill '#7ebae4' -draw 'circle 128,128 128,8' $out";
 in
 pkgs.testers.runNixOSTest {
   name = "bootmap";
@@ -27,6 +32,16 @@ pkgs.testers.runNixOSTest {
         services.bootmap.enable = true;
         services.bootmap.holdSeconds = 8;
         services.bootmap.handoverUnits = [ ];
+        # A configured look: the screenshots show it, and the checks below
+        # make sure bootmap accepted the file.
+        services.bootmap.settings = {
+          theme = "black";
+          title = "Test boot";
+          text-scale = 1.3;
+          center-image = logo;
+          colors.active = "#ff00ff";
+          show.legend = false;
+        };
         environment.systemPackages = [ pkgs.jq ];
         virtualisation.qemu.options = [ "-device virtio-gpu-pci,id=second,xres=1024,yres=768" ];
       };
@@ -70,6 +85,12 @@ pkgs.testers.runNixOSTest {
           initrd = true;
           holdSeconds = 8;
           handoverUnits = [ ];
+          # The file and the image must be in the initrd, where bootmap starts.
+          settings = {
+            title = "Initrd test";
+            center-image = logo;
+            colors.active = "#ff00ff";
+          };
         };
         environment.systemPackages = [ pkgs.jq ];
         # Keeps the initrd stage long enough to take a screenshot of it.
@@ -177,6 +198,9 @@ pkgs.testers.runNixOSTest {
         second_monitor(held, "second-monitor")
         unit_log = held.succeed("journalctl -b -u bootmap.service --no-pager")
         assert "bootmap: mirroring to Virtual-2 at 1024x768" in unit_log, unit_log
+        assert "ignoring configuration" not in unit_log, unit_log
+        held.succeed("test -e /etc/bootmap.toml")
+        held.succeed("bootmap check-config /etc/bootmap.toml")
         held.wait_until_succeeds("test -s /var/log/bootmap/last.json", timeout=60)
         held.succeed("jq -e '.units | length > 20' /var/log/bootmap/last.json")
         held.succeed("jq -e '.phases.finish > 0' /var/log/bootmap/last.json")
@@ -237,6 +261,8 @@ pkgs.testers.runNixOSTest {
         unit_log = initrd.succeed("journalctl -b -u bootmap.service --no-pager")
         assert "followed systemd into the real root" in unit_log, unit_log
         assert unit_log.count("bootmap: drawing on") == 1, unit_log
+        # The file and the image were in the initrd, where bootmap read them.
+        assert "ignoring configuration" not in unit_log, unit_log
         initrd.wait_until_succeeds("jq -e '.phases.finish > 0' /var/log/bootmap/last.json", timeout=60)
         initrd.succeed("jq -e '.units[\"slow-initrd.service\"].t_activating > 0' /var/log/bootmap/last.json")
         initrd.succeed("jq -e '.units[\"multi-user.target\"].t_active > 0' /var/log/bootmap/last.json")

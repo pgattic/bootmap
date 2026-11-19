@@ -23,6 +23,8 @@ and what is holding the boot up.
 - **Shutdown too.** The graph comes back when you shut down or reboot, showing
   what is still stopping.
 - **Unlocks encrypted disks.** Passphrase prompts appear right over the graph.
+- **Make it yours.** Pick a theme, change the colors and text size, hide what
+  you do not need, and put your own logo in the middle.
 - **Any screen.** Sharp on high-resolution displays, mirrored to every
   connected monitor.
 
@@ -67,7 +69,7 @@ Rebuild and reboot. For more info on `services.bootmap.initrd = true;`, see
 
 ## Documentation
 
-- [Usage](docs/usage.md): the viewer, every NixOS option, encrypted disks,
+- [Usage](docs/usage.md): the viewer, every NixOS option, appearance, encrypted disks,
   monitors, troubleshooting.
 - [How it works](docs/how-it-works.md): how bootmap reads the boot, draws it,
   and stays out of the way.

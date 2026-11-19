@@ -49,6 +49,7 @@
 
       checks = forAll (pkgs: {
         vm = import ./nix/vm-test.nix { inherit pkgs self; };
+        bad-config = import ./nix/bad-config-test.nix { inherit pkgs self nixpkgs; };
       });
     };
 }

@@ -16,7 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
 
 struct Card {
     file: File,
@@ -127,7 +127,7 @@ impl Head {
     }
 
     /// Show `pm`, scaled to fit and centered if it is not this head's size.
-    fn present(&mut self, pm: &Pixmap) -> Result<()> {
+    fn present(&mut self, pm: &Pixmap, background: Color) -> Result<()> {
         if (pm.width(), pm.height()) == self.size {
             return self.blit(pm);
         }
@@ -138,7 +138,7 @@ impl Head {
         };
         let s = (w as f32 / pm.width() as f32).min(h as f32 / pm.height() as f32);
         let (dx, dy) = ((w as f32 - pm.width() as f32 * s) / 2.0, (h as f32 - pm.height() as f32 * s) / 2.0);
-        scaled.fill(bootmap_core::render::background());
+        scaled.fill(background);
         let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
         scaled.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_scale(s, s).post_translate(dx, dy), None);
         let res = self.blit(&scaled);
@@ -290,12 +290,12 @@ impl Display {
     }
 
     /// Show `pm` on every output. Fails only if the primary does.
-    pub fn present(&mut self, pm: &Pixmap) -> Result<()> {
+    pub fn present(&mut self, pm: &Pixmap, background: Color) -> Result<()> {
         let mut heads = self.heads.iter_mut();
         let primary = heads.next().context("no outputs")?;
-        primary.present(pm)?;
+        primary.present(pm, background)?;
         for h in heads {
-            let _ = h.present(pm);
+            let _ = h.present(pm, background);
         }
         Ok(())
     }

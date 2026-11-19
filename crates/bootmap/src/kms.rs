@@ -200,8 +200,8 @@ impl Console {
         Self { display: Some(display), vt, agent, prompts, marker }
     }
 
-    fn present(&mut self, pm: &tiny_skia::Pixmap) -> Result<()> {
-        self.display.as_mut().context("no display")?.present(pm)
+    fn present(&mut self, pm: &tiny_skia::Pixmap, background: tiny_skia::Color) -> Result<()> {
+        self.display.as_mut().context("no display")?.present(pm, background)
     }
 
     fn display_gone(&self) -> bool {
@@ -251,12 +251,12 @@ pub struct BootOptions {
     pub vt: u32,
 }
 
-pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions) -> Result<()> {
+pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_core::config::Look, opts: BootOptions) -> Result<()> {
     let BootOptions { record, hold, released_marker, shutdown, vt: vt_number } = opts;
     let shutdown_from = shutdown.then(|| source.begin_shutdown());
     // A shutdown is not a boot recording: never overwrite the saved timeline.
     let replay = shutdown || matches!(source.mode, crate::live::Mode::Replay { .. });
-    let mut scene = Scene::new(source, &graph);
+    let mut scene = Scene::new(source, &graph, look);
     scene.renderer.opts.shutdown_from = shutdown_from;
     let agent_marker = released_marker.with_file_name("agent");
 
@@ -337,7 +337,7 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
             Some(c) => {
                 scene.renderer.prompt = c.prompt();
                 scene.frame(&mut pm);
-                let res = c.present(&pm);
+                let res = c.present(&pm, scene.renderer.background());
                 if frames == 0 {
                     eprintln!("bootmap: first frame in {:?} ({:?})", t0.elapsed(), res.as_ref().err());
                 }

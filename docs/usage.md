@@ -9,6 +9,7 @@
 - [Login screens](#login-screens)
 - [Shutdown](#shutdown)
 - [Monitors and screen size](#monitors-and-screen-size)
+- [Appearance](#appearance)
 - [Troubleshooting](#troubleshooting)
 
 ## Reading the graph
@@ -99,6 +100,7 @@ All under `services.bootmap`.
 | `showProcesses` | `true` | Draw the processes of running units. |
 | `showDevices` | `false` | Draw device units too. |
 | `recordPath` | `/var/log/bootmap/last.json` | Where each boot is recorded. |
+| `settings` | `{ }` | The look of the graph: theme, colors, text size, font, title, center image, hidden panels. Written to `/etc/bootmap.toml`; see [appearance](#appearance). |
 | `quietKernel` | `true` | Add `quiet loglevel=3` to the kernel command line, so kernel messages do not cover the screen before bootmap starts. |
 | `package` | bootmap | The bootmap build to install and run. |
 | `bootPackage` | `package` | The build used at boot. Set it to `bootmap.packages.${system}.bootmap-minimal` for an initrd about 1 MiB smaller; that build only has `bootmap boot`. |
@@ -165,6 +167,90 @@ Monitors plugged in after bootmap has started are not picked up.
 Text and dots keep the same physical size on any screen, so a high-resolution
 laptop panel shows the same picture as a regular monitor, only sharper. In the
 viewer, sizes follow your desktop's scale setting.
+
+## Appearance
+
+Theme, colors, text size, font, title and a picture in the middle can be
+changed, and each panel can be hidden. The settings live in a TOML file,
+`/etc/bootmap.toml`, which the NixOS module writes from
+`services.bootmap.settings`:
+
+```nix
+services.bootmap.settings = {
+  theme = "black";
+  title = "Welcome back";
+  text-scale = 1.2;
+  center-image = ./logo.png;
+  colors = {
+    active = "#7ebae4";
+    failed = "#f55";
+  };
+  show.legend = false;
+};
+```
+
+Every key is optional; what you leave out keeps its default. The names are
+the ones in the file, so `text-scale` and `center-image` keep their dashes,
+and the `colors` and `show` groups are nested sets.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `theme` | `"dark"` | `"dark"` or `"black"`. |
+| `text-scale` | `1` | Text size, from 0.5 to 3. It is applied on top of the automatic scaling for the screen (see [monitors and screen size](#monitors-and-screen-size)). |
+| `font` | bundled DejaVu Sans | A TrueType or OpenType file, used for all text. |
+| `center-image` | none | A PNG drawn in the middle of the graph. |
+| `title` | `"bootmap · <hostname>"` | The heading at the top left. `""` hides it. |
+| `colors.*` | from the theme | Overrides for single colors, as `"#rrggbb"` or `"#rgb"`. See below. |
+| `show.status` | `true` | The elapsed time and the number of units in each state. |
+| `show.activity` | `true` | What is starting right now, or the slowest units once the boot is done. |
+| `show.legend` | `true` | The color key. |
+| `show.phases` | `true` | The bottom line with the time per boot stage and the progress bar. |
+| `show.labels` | `true` | Unit names next to the dots. |
+| `show.extra-edges` | `true` | The faint lines for dependencies that are not part of the tree. |
+
+Hidden panels take no space: what comes after them moves up.
+
+**Themes.** `dark` has a dark blue-grey background. `black` is true black,
+which suits OLED panels and a boot that starts from a black screen.
+
+**Colors.** The names are the same for both themes; setting one replaces the
+theme's value.
+
+| Name | Colors |
+|---|---|
+| `background` | the background |
+| `panel` | behind the details shown when hovering a unit, and the passphrase prompt |
+| `text` | titles, labels and counts |
+| `muted` | secondary text: headings, the legend, timings |
+| `track` | the empty part of the progress bar |
+| `pending` | units not started yet |
+| `starting` | units that are starting or stopping, and the passphrase prompt's accent |
+| `active` | running units |
+| `target` | targets |
+| `exited` | units that ran and exited |
+| `failed` | failed units and errors |
+| `process` | the processes of running units |
+
+**Center image.** It must be a PNG (transparency works). It is scaled to fit
+inside the center of the graph, so any size will do; a square image of 256 by
+256 pixels or more stays sharp. With `initrd = true` the image, the font and
+the settings file are included in the initrd, so they apply from the first
+moment.
+
+**Mistakes fail the rebuild, not the boot.** The module runs
+`bootmap check-config` on the generated file while building, so an unknown key
+(`tehme`), a bad value or a color that is not `#rrggbb` stops `nixos-rebuild`
+with a message, and so does a font or image that cannot be loaded. If a file
+is broken anyway, bootmap logs `ignoring configuration` and uses the defaults.
+
+`bootmap view` and `bootmap render` read the same file, so a replay looks as
+the boot did. To try settings without rebuilding, point them at another file
+with `--config PATH`:
+
+```sh
+bootmap view --config ./try.toml /var/log/bootmap/last.json
+bootmap check-config ./try.toml
+```
 
 ## Troubleshooting
 

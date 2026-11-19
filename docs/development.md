@@ -34,15 +34,16 @@ crates/bootmap-core/      the library
   layout.rs               dependency tree and template groups
   force.rs                force simulation
   render.rs               drawing, labels, HUD, passphrase prompt
+  config.rs               the TOML configuration: parsing, themes, loading font and image
 crates/bootmap/           the command
-  main.rs                 command line
+  main.rs                 command line (including check-config)
   live.rs                 live and replayed sources, the scene (layout, physics, camera)
   window.rs               bootmap view
   kms.rs                  bootmap boot: main loop, following the boot from the initrd
   display.rs              KMS outputs
   vt.rs                   virtual terminal and keyboard
   ask.rs                  password agent
-nix/                      package, NixOS module, VM test
+nix/                      package, NixOS module, VM test, bad-config check
 samples/                  recorded boots used by tests and the demo
 docs/demo/                the README animation and the script that makes it
 ```
@@ -52,6 +53,7 @@ docs/demo/                the README animation and the script that makes it
 ```sh
 nix develop -c cargo test
 nix build .#checks.aarch64-linux.vm -L     # or x86_64-linux
+nix build .#checks.aarch64-linux.bad-config -L   # a misspelled setting fails the build
 ```
 
 The unit tests run the layout and physics on the recorded boots in
@@ -68,6 +70,29 @@ The VM test boots NixOS machines with the module, using QEMU:
 | `greeter` | A Wayland compositor as the login screen: the handover happens before it starts, and at shutdown the graph takes the display back from it. |
 
 Screenshots from each machine land in `result/`.
+
+The `held` and `initrd` machines also set `services.bootmap.settings`. `held`
+uses a theme, title, colors and a center image built in the test, so its
+screenshots show the configured look. `initrd` uses a small set with a center
+image, to prove that the file and the image reach the initrd. Both assert that
+the journal has no `ignoring configuration`.
+
+## Configuration
+
+`bootmap check-config FILE` parses a configuration file, loads its font and
+image, and prints `ok` or fails with a message. Both packages have it.
+
+The NixOS module (`nix/module.nix`) turns `services.bootmap.settings` into TOML
+with `pkgs.formats.toml`, replaces `font` and `center-image` with store paths,
+runs `check-config` on the result in a `runCommand` (skipped when the build
+platform cannot run the host's binaries) and installs it as
+`/etc/bootmap.toml`, also in the initrd with `initrd = true`. The checked file
+is the internal option `services.bootmap.configFile`.
+
+The flake check `bad-config` (`nix/bad-config-test.nix`) evaluates a NixOS
+configuration with the misspelled key `tehme` and uses `testers.testBuildFailure'`
+to assert that building the checked file fails and that the log names the key.
+It needs the package to build, but no VM.
 
 ## Debugging
 

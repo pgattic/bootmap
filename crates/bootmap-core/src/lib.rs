@@ -1,5 +1,6 @@
 //! Core of bootmap: boot data model, systemd client, radial layout and renderer.
 
+pub mod config;
 pub mod force;
 pub mod layout;
 pub mod model;

@@ -9,6 +9,7 @@ use anyhow::Result;
 use bootmap_core::model::Usec;
 use bootmap_core::systemd::{monotonic_now, LiveMsg, Systemd};
 use bootmap_core::render::{Camera, Frame};
+use bootmap_core::config::Look;
 use bootmap_core::{BootTimeline, ForceParams, Layout, LayoutOptions, Renderer, Sim};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
@@ -220,7 +221,7 @@ pub const VIEWER_FPS: f32 = 60.0;
 const TICKS_PER_FRAME: usize = 2;
 
 impl Scene {
-    pub fn new(source: Source, graph: &GraphArgs) -> Self {
+    pub fn new(source: Source, graph: &GraphArgs, look: Look) -> Self {
         let opts = graph.layout_options();
         let layout = Layout::compute(&source.tl, &opts);
         let sim = Sim::new(&layout, ForceParams { radial: graph.radial, ..Default::default() });
@@ -229,7 +230,7 @@ impl Scene {
             sim,
             pos,
             layout,
-            renderer: Renderer::new(graph.render_options()),
+            renderer: Renderer::new(graph.render_options(), look),
             cam: Camera { cx: 0.0, cy: 0.0, scale: 50.0 },
             auto_fit: true,
             snap: true,

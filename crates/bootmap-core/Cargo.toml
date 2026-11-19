@@ -8,6 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tiny-skia.workspace = true
+# PNG decoding for the center image (encoding stays in the `tools` feature).
+tiny-skia = { workspace = true, features = ["png-format"] }
+toml = "0.8"
 fontdue.workspace = true
 dbus.workspace = true

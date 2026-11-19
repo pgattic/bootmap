@@ -14,6 +14,32 @@ let
     mkOption
     types
     ;
+  settingsFormat = pkgs.formats.toml { };
+
+  # Paths given as Nix paths (./logo.png) or derivations are copied to the
+  # store by the interpolation, so the file names store paths. Unset keys
+  # are left out.
+  settings = lib.filterAttrs (_: v: v != null) (
+    cfg.settings
+    // lib.optionalAttrs (cfg.settings.font != null) { font = "${cfg.settings.font}"; }
+    // lib.optionalAttrs (cfg.settings.center-image != null) {
+      center-image = "${cfg.settings.center-image}";
+    }
+  );
+  hasSettings = settings != { };
+  uncheckedConfigFile = settingsFormat.generate "bootmap-unchecked.toml" settings;
+  canRunPackage = pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform;
+  # A mistake in the settings fails the build here, not the boot.
+  configFile = pkgs.runCommand "bootmap.toml" { } ''
+    ${lib.optionalString canRunPackage "${lib.getExe cfg.package} check-config ${uncheckedConfigFile}"}
+    cp ${uncheckedConfigFile} $out
+  '';
+  # Font and image are read at boot, so the initrd needs them too.
+  assetPaths = lib.filter (p: p != null) [
+    (settings.font or null)
+    (settings.center-image or null)
+  ];
+
   args = lib.cli.toCommandLineShellGNU { } {
     record = cfg.recordPath;
     hold = cfg.holdSeconds;
@@ -172,6 +198,62 @@ in
       '';
     };
 
+    settings = mkOption {
+      type = types.submodule {
+        freeformType = settingsFormat.type;
+        options = {
+          font = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            example = lib.literalExpression ''"''${pkgs.noto-fonts}/share/fonts/noto/NotoSans[wdth,wght].ttf"'';
+            description = ''
+              TrueType or OpenType font file for all text. Copied to the Nix
+              store. null uses the bundled DejaVu Sans.
+            '';
+          };
+          center-image = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            example = lib.literalExpression "./logo.png";
+            description = ''
+              PNG drawn in the middle of the graph, scaled to fit. Copied to
+              the Nix store. null draws the plain center dot.
+            '';
+          };
+        };
+      };
+      default = { };
+      example = lib.literalExpression ''
+        {
+          theme = "black";
+          title = "Welcome";
+          text-scale = 1.2;
+          center-image = ./logo.png;
+          colors.active = "#7ebae4";
+          show.legend = false;
+        }
+      '';
+      description = ''
+        How the graph looks: theme, colors, text size, font, a title, a
+        picture in the middle, and which panels are shown. Written as TOML to
+        {file}`/etc/bootmap.toml`, which `bootmap boot`, `bootmap view` and
+        `bootmap render` read, and with `initrd` also to the initrd. Keys are
+        written as in the file (`text-scale`, `center-image`, `[colors]`,
+        `[show]`); see "Appearance" in docs/usage.md for all of them. The
+        build fails if `bootmap check-config` rejects the result, for example
+        on an unknown key or a bad color. Empty (the default) keeps the
+        built-in look and installs no file.
+      '';
+    };
+
+    configFile = mkOption {
+      type = types.path;
+      internal = true;
+      readOnly = true;
+      default = configFile;
+      description = "The checked bootmap.toml generated from `settings`.";
+    };
+
     quietKernel = mkOption {
       type = types.bool;
       default = true;
@@ -219,7 +301,8 @@ in
     systemd.paths.systemd-ask-password-console = consoleAgentPath;
 
     boot.initrd.systemd = mkIf cfg.initrd {
-      storePaths = [ (lib.getExe cfg.bootPackage) ];
+      storePaths = [ (lib.getExe cfg.bootPackage) ] ++ assetPaths;
+      contents."/etc/bootmap.toml" = mkIf hasSettings { source = configFile; };
       services.bootmap = bootmapService;
       paths.systemd-ask-password-console = consoleAgentPath;
     };
@@ -269,6 +352,8 @@ in
         RemainAfterExit = true;
       };
     };
+
+    environment.etc."bootmap.toml" = mkIf hasSettings { source = configFile; };
 
     environment.systemPackages = [ cfg.package ];
   };

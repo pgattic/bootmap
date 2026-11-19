@@ -33,11 +33,11 @@ struct App {
     last_frame: std::time::Instant,
 }
 
-pub fn run(source: Source, graph: GraphArgs) -> Result<()> {
+pub fn run(source: Source, graph: GraphArgs, look: bootmap_core::config::Look) -> Result<()> {
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        scene: Scene::new(source, &graph),
+        scene: Scene::new(source, &graph, look),
         window: None,
         surface: None,
         pixmap: None,

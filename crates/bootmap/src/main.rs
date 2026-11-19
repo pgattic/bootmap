@@ -1,6 +1,7 @@
 #[cfg(feature = "tools")]
 use anyhow::Context;
 use anyhow::Result;
+use bootmap_core::config::{self, Config, Look};
 use bootmap_core::render::RenderOptions;
 use bootmap_core::systemd::{LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, LayoutOptions, UnitKind};
@@ -48,6 +49,9 @@ pub struct GraphArgs {
     /// freely, 1 keeps early units near the center and late ones outside.
     #[arg(long, default_value_t = 0.5)]
     pub radial: f32,
+    /// Configuration file (look and panels). Default: /etc/bootmap.toml if it exists.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
 }
 
 impl GraphArgs {
@@ -64,6 +68,24 @@ impl GraphArgs {
         o.processes = !self.no_processes;
         o
     }
+    /// For `view` and `render`, run from a terminal: a configuration that
+    /// was asked for or exists but does not work is an error.
+    #[cfg(any(feature = "tools", feature = "window"))]
+    pub fn look(&self) -> Result<Look> {
+        let path = match &self.config {
+            Some(p) => p.clone(),
+            None if std::path::Path::new(config::DEFAULT_PATH).exists() => config::DEFAULT_PATH.into(),
+            None => return Ok(Look::default()),
+        };
+        check_config(&path)
+    }
+
+    /// For `boot`: never fails, a broken file must not stop the boot picture.
+    #[cfg(feature = "drm")]
+    pub fn boot_look(&self) -> Look {
+        Config::load_or_default(self.config.as_deref().unwrap_or(std::path::Path::new(config::DEFAULT_PATH)))
+    }
+
     pub fn render_options(&self) -> RenderOptions {
         RenderOptions { extra_edges: !self.no_extra_edges, ..Default::default() }
     }
@@ -71,6 +93,8 @@ impl GraphArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Check a configuration file (and the font and image it names); prints "ok".
+    CheckConfig { file: PathBuf },
     /// Snapshot the current boot to JSON.
     #[cfg(feature = "tools")]
     Capture {
@@ -150,6 +174,10 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
+        Cmd::CheckConfig { file } => {
+            check_config(&file)?;
+            println!("ok");
+        }
         #[cfg(feature = "tools")]
         Cmd::Capture { output, slack } => {
             let mut sd = Systemd::connect()?;
@@ -174,11 +202,12 @@ fn main() -> Result<()> {
         Cmd::Render { input, frames: Some(dir), fps, size, highlight, ui_scale, graph, .. } => {
             // One continuous scene, as in the viewer: units start from the
             // initial arrangement and settle while the boot plays.
+            let look = graph.look()?;
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let (start, end) = tl.span();
             let (first, last) = (start.saturating_sub(200_000), end + bootmap_core::render::SETTLE_USEC);
-            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph);
+            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph, look);
             scene.hover = highlight;
             scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
             std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -199,10 +228,11 @@ fn main() -> Result<()> {
         }
         #[cfg(feature = "tools")]
         Cmd::Render { input, at, output, size, highlight, ui_scale, graph, .. } => {
+            let look = graph.look()?;
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let t = parse_at(&tl, &at)?;
-            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph);
+            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph, look);
             scene.settle();
             scene.hover = highlight;
             scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
@@ -225,7 +255,8 @@ fn main() -> Result<()> {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, speed),
                 None => live::Source::live()?,
             };
-            window::run(source, graph)?;
+            let look = graph.look()?;
+            window::run(source, graph, look)?;
         }
         #[cfg(feature = "drm")]
         Cmd::Boot { record, hold, replay, shutdown, vt, released_marker, graph } => {
@@ -235,7 +266,8 @@ fn main() -> Result<()> {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, 1.0),
                 None => live::Source::live()?,
             };
-            kms::run(sig, source, graph, kms::BootOptions { record, hold, released_marker, shutdown, vt })?;
+            let look = graph.boot_look();
+            kms::run(sig, source, graph, look, kms::BootOptions { record, hold, released_marker, shutdown, vt })?;
         }
     }
     Ok(())
@@ -306,4 +338,9 @@ pub fn spawn_reconnecting_watcher() -> mpsc::Receiver<LiveMsg> {
         }
     });
     rx
+}
+
+/// Load and fully resolve a configuration file, with context on failure.
+fn check_config(path: &std::path::Path) -> Result<Look> {
+    Config::load(path)?.resolve().map_err(|e| e.context(format!("in {}", path.display())))
 }

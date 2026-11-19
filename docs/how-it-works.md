@@ -6,6 +6,7 @@
 - [At boot](#at-boot)
 - [Following the boot from the initrd](#following-the-boot-from-the-initrd)
 - [Handing over to the login screen](#handing-over-to-the-login-screen)
+- [Configuration file](#configuration-file)
 - [Passphrases](#passphrases)
 - [Shutdown](#shutdown)
 - [Recordings](#recordings)
@@ -137,6 +138,26 @@ off-screen until the boot finishes.
 A simple `Conflicts=` between bootmap and the login screen does not work:
 both start jobs are in the same boot transaction, and systemd resolves the
 conflict by silently dropping the login screen's job.
+
+## Configuration file
+
+The look of the graph comes from a TOML file, `/etc/bootmap.toml` (the keys
+are listed under [appearance](usage.md#appearance)). `bootmap boot`,
+`bootmap view` and `bootmap render` all read it, so a replay looks like the
+boot did; `--config PATH` reads another file. On NixOS the module writes it
+from `services.bootmap.settings`, and with `initrd = true` it also puts the
+file, the font and the center image into the initrd, since the boot-time
+process starts there.
+
+The file is checked when the system is built. The module runs
+`bootmap check-config` on the generated file, which fails on unknown keys, bad
+values and a font or image that cannot be loaded, so a typo stops the rebuild.
+The check is skipped when the build machine cannot run the target's binaries
+(cross builds).
+
+At boot a problem must not cost the boot its picture. If the file is broken
+(say, edited by hand), bootmap logs `ignoring configuration` with the
+reason and draws with the defaults.
 
 ## Passphrases
 
