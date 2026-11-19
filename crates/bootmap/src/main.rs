@@ -101,8 +101,8 @@ enum Cmd {
     #[cfg(feature = "window")]
     View {
         input: Option<PathBuf>,
-        /// Replay speed multiplier.
-        #[arg(long, default_value_t = 0.5)]
+        /// Replay speed multiplier (0.5 = half speed).
+        #[arg(long, default_value_t = 1.0)]
         speed: f32,
         #[command(flatten)]
         graph: GraphArgs,
