@@ -35,7 +35,9 @@ fn parse(path: &Path, text: &str) -> Option<Request> {
             in_ask = line == "[Ask]";
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         if !in_ask {
             continue;
         }
@@ -46,13 +48,21 @@ fn parse(path: &Path, text: &str) -> Option<Request> {
             _ => {}
         }
     }
-    Some(Request { path: path.to_path_buf(), socket: socket?, message, echo })
+    Some(Request {
+        path: path.to_path_buf(),
+        socket: socket?,
+        message,
+        echo,
+    })
 }
 
 /// Is anything asking for a passphrase right now?
 pub fn pending() -> bool {
     std::fs::read_dir(ASK_DIR)
-        .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ask.")))
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("ask."))
+        })
         .unwrap_or(false)
 }
 
@@ -102,15 +112,22 @@ impl Agent {
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.path())
-                    .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ask.")))
+                    .filter(|p| {
+                        p.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("ask."))
+                    })
                     .filter_map(|p| parse(&p, &std::fs::read_to_string(&p).ok()?))
                     .collect()
             })
             .unwrap_or_default();
         pending.sort_by(|a, b| a.path.cmp(&b.path));
-        self.answered.retain(|p| pending.iter().any(|r| &r.path == p));
+        self.answered
+            .retain(|p| pending.iter().any(|r| &r.path == p));
         // Keep showing the current request while it is still pending.
-        let still = self.current.as_ref().is_some_and(|c| pending.iter().any(|r| r.path == c.path));
+        let still = self
+            .current
+            .as_ref()
+            .is_some_and(|c| pending.iter().any(|r| r.path == c.path));
         if still {
             return;
         }
@@ -118,7 +135,9 @@ impl Agent {
             // Gone without our answer: timed out, or another agent answered.
             self.clear_typed();
         }
-        self.current = pending.into_iter().find(|r| !self.answered.contains(&r.path));
+        self.current = pending
+            .into_iter()
+            .find(|r| !self.answered.contains(&r.path));
         if let Some(c) = &self.current {
             eprintln!("bootmap: asking for a passphrase");
             self.retry = self.last_message.as_deref() == Some(c.message.as_str());
@@ -140,9 +159,7 @@ impl Agent {
                     return;
                 }
                 // Backspace: drop one character, which may be several bytes.
-                0x7f | 0x08 => {
-                    while self.typed.pop().is_some_and(|b| b & 0xC0 == 0x80) {}
-                }
+                0x7f | 0x08 => while self.typed.pop().is_some_and(|b| b & 0xC0 == 0x80) {},
                 // Ctrl-U: start over.
                 0x15 => self.clear_typed(),
                 // Escape alone starts over; as the start of a key sequence
@@ -163,7 +180,9 @@ impl Agent {
     }
 
     fn submit(&mut self) {
-        let Some(req) = self.current.take() else { return };
+        let Some(req) = self.current.take() else {
+            return;
+        };
         let mut packet = Vec::with_capacity(self.typed.len() + 1);
         packet.push(b'+');
         packet.extend_from_slice(&self.typed);
@@ -195,9 +214,19 @@ impl Agent {
         let req = self.current.as_ref()?;
         let chars = self.typed.iter().filter(|b| *b & 0xC0 != 0x80).count();
         Some(Prompt {
-            message: if req.message.is_empty() { "Password:".into() } else { req.message.clone() },
-            entered: if req.echo { String::from_utf8_lossy(&self.typed).into_owned() } else { "•".repeat(chars) },
-            note: self.retry.then(|| "That did not work. Try again.".to_string()),
+            message: if req.message.is_empty() {
+                "Password:".into()
+            } else {
+                req.message.clone()
+            },
+            entered: if req.echo {
+                String::from_utf8_lossy(&self.typed).into_owned()
+            } else {
+                "•".repeat(chars)
+            },
+            note: self
+                .retry
+                .then(|| "That did not work. Try again.".to_string()),
         })
     }
 }
@@ -220,12 +249,15 @@ mod tests {
 
     impl Asker {
         fn new(name: &str, message: &str, echo: bool) -> Self {
-            let dir = std::env::temp_dir().join(format!("bootmap-ask-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("bootmap-ask-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let sock = dir.join("sck.1");
             let socket = UnixDatagram::bind(&sock).unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let me = Self { dir, socket };
             me.ask("ask.1", message, echo);
             me
@@ -270,7 +302,10 @@ mod tests {
         agent.keys(b"\x1b[C");
         agent.keys(b"r2\n");
         assert_eq!(asker.received(), b"+hunter2");
-        assert!(agent.prompt().is_none(), "answered request is not shown again");
+        assert!(
+            agent.prompt().is_none(),
+            "answered request is not shown again"
+        );
         agent.scan();
         assert!(agent.prompt().is_none(), "even while its file still exists");
     }
@@ -289,7 +324,11 @@ mod tests {
         let p = agent.prompt().unwrap();
         assert!(p.note.is_some());
         agent.keys(b"ab");
-        assert_eq!(agent.prompt().unwrap().entered, "ab", "Echo=1 shows the text");
+        assert_eq!(
+            agent.prompt().unwrap().entered,
+            "ab",
+            "Echo=1 shows the text"
+        );
         // Escape starts over.
         agent.keys(&[0x1b]);
         assert_eq!(agent.prompt().unwrap().entered, "");

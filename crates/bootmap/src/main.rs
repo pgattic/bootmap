@@ -15,9 +15,9 @@ mod ask;
 mod display;
 #[cfg(feature = "drm")]
 mod kms;
+mod live;
 #[cfg(feature = "drm")]
 mod vt;
-mod live;
 #[cfg(feature = "window")]
 mod window;
 
@@ -74,7 +74,9 @@ impl GraphArgs {
     pub fn look(&self) -> Result<Look> {
         let path = match &self.config {
             Some(p) => p.clone(),
-            None if std::path::Path::new(config::DEFAULT_PATH).exists() => config::DEFAULT_PATH.into(),
+            None if std::path::Path::new(config::DEFAULT_PATH).exists() => {
+                config::DEFAULT_PATH.into()
+            }
             None => return Ok(Look::default()),
         };
         check_config(&path)
@@ -83,11 +85,18 @@ impl GraphArgs {
     /// For `boot`: never fails, a broken file must not stop the boot picture.
     #[cfg(feature = "drm")]
     pub fn boot_look(&self) -> Look {
-        Config::load_or_default(self.config.as_deref().unwrap_or(std::path::Path::new(config::DEFAULT_PATH)))
+        Config::load_or_default(
+            self.config
+                .as_deref()
+                .unwrap_or(std::path::Path::new(config::DEFAULT_PATH)),
+        )
     }
 
     pub fn render_options(&self) -> RenderOptions {
-        RenderOptions { extra_edges: !self.no_extra_edges, ..Default::default() }
+        RenderOptions {
+            extra_edges: !self.no_extra_edges,
+            ..Default::default()
+        }
     }
 }
 
@@ -184,29 +193,47 @@ fn main() -> Result<()> {
             let mut tl = sd.snapshot()?;
             if tl.phases.finish > 0 {
                 let cutoff = tl.phases.finish + (slack * 1e6) as u64;
-                tl.units.retain(|_, u| u.t_activating.is_none_or(|t| t <= cutoff));
+                tl.units
+                    .retain(|_, u| u.t_activating.is_none_or(|t| t <= cutoff));
                 tl.synthesize_events();
             }
             eprintln!(
                 "captured {} units, {} events (via {})",
                 tl.units.len(),
                 tl.events.len(),
-                if sd.is_private() { "private socket" } else { "system bus" }
+                if sd.is_private() {
+                    "private socket"
+                } else {
+                    "system bus"
+                }
             );
             match output {
-                Some(p) => std::fs::write(&p, tl.to_json()).with_context(|| format!("writing {}", p.display()))?,
+                Some(p) => std::fs::write(&p, tl.to_json())
+                    .with_context(|| format!("writing {}", p.display()))?,
                 None => println!("{}", tl.to_json()),
             }
         }
         #[cfg(feature = "tools")]
-        Cmd::Render { input, frames: Some(dir), fps, size, highlight, ui_scale, graph, .. } => {
+        Cmd::Render {
+            input,
+            frames: Some(dir),
+            fps,
+            size,
+            highlight,
+            ui_scale,
+            graph,
+            ..
+        } => {
             // One continuous scene, as in the viewer: units start from the
             // initial arrangement and settle while the boot plays.
             let look = graph.look()?;
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let (start, end) = tl.span();
-            let (first, last) = (start.saturating_sub(200_000), end + bootmap_core::render::SETTLE_USEC);
+            let (first, last) = (
+                start.saturating_sub(200_000),
+                end + bootmap_core::render::SETTLE_USEC,
+            );
             let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph, look);
             scene.hover = highlight;
             scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
@@ -227,7 +254,16 @@ fn main() -> Result<()> {
             eprintln!("wrote {n} frames to {}", dir.display());
         }
         #[cfg(feature = "tools")]
-        Cmd::Render { input, at, output, size, highlight, ui_scale, graph, .. } => {
+        Cmd::Render {
+            input,
+            at,
+            output,
+            size,
+            highlight,
+            ui_scale,
+            graph,
+            ..
+        } => {
             let look = graph.look()?;
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
@@ -247,10 +283,19 @@ fn main() -> Result<()> {
             }
             pm.save_png(&output)?;
             let lay = &scene.layout;
-            eprintln!("wrote {} ({} nodes, depth {})", output.display(), lay.nodes.len() - 1, lay.max_depth);
+            eprintln!(
+                "wrote {} ({} nodes, depth {})",
+                output.display(),
+                lay.nodes.len() - 1,
+                lay.max_depth
+            );
         }
         #[cfg(feature = "window")]
-        Cmd::View { input, speed, graph } => {
+        Cmd::View {
+            input,
+            speed,
+            graph,
+        } => {
             let source = match input {
                 Some(p) => live::Source::replay(BootTimeline::load(&p)?, speed),
                 None => live::Source::live()?,
@@ -259,7 +304,15 @@ fn main() -> Result<()> {
             window::run(source, graph, look)?;
         }
         #[cfg(feature = "drm")]
-        Cmd::Boot { record, hold, replay, shutdown, vt, released_marker, graph } => {
+        Cmd::Boot {
+            record,
+            hold,
+            replay,
+            shutdown,
+            vt,
+            released_marker,
+            graph,
+        } => {
             // Before anything slow: an early SIGUSR1 would otherwise kill us.
             let sig = kms::Signals::install()?;
             let source = match replay {
@@ -267,7 +320,19 @@ fn main() -> Result<()> {
                 None => live::Source::live()?,
             };
             let look = graph.boot_look();
-            kms::run(sig, source, graph, look, kms::BootOptions { record, hold, released_marker, shutdown, vt })?;
+            kms::run(
+                sig,
+                source,
+                graph,
+                look,
+                kms::BootOptions {
+                    record,
+                    hold,
+                    released_marker,
+                    shutdown,
+                    vt,
+                },
+            )?;
         }
     }
     Ok(())
@@ -286,9 +351,16 @@ fn parse_at(tl: &BootTimeline, at: &str) -> Result<u64> {
         // The settled final picture, after the last labels have faded.
         return Ok(end + bootmap_core::render::SETTLE_USEC);
     }
-    let s: f64 = at.trim_end_matches('s').parse().context("--at must be seconds or \"end\"")?;
+    let s: f64 = at
+        .trim_end_matches('s')
+        .parse()
+        .context("--at must be seconds or \"end\"")?;
     // Relative to the userspace start; negative values reach back into the initrd.
-    let origin = if tl.phases.userspace > 0 { tl.phases.userspace } else { start };
+    let origin = if tl.phases.userspace > 0 {
+        tl.phases.userspace
+    } else {
+        start
+    };
     let t = origin as i64 + (s * 1e6) as i64;
     Ok(t.max(start as i64) as u64)
 }
@@ -342,5 +414,7 @@ pub fn spawn_reconnecting_watcher() -> mpsc::Receiver<LiveMsg> {
 
 /// Load and fully resolve a configuration file, with context on failure.
 fn check_config(path: &std::path::Path) -> Result<Look> {
-    Config::load(path)?.resolve().map_err(|e| e.context(format!("in {}", path.display())))
+    Config::load(path)?
+        .resolve()
+        .map_err(|e| e.context(format!("in {}", path.display())))
 }

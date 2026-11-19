@@ -68,7 +68,13 @@ impl DisplaySearch {
 
     fn new(give_up_after: Option<Duration>) -> Self {
         let now = Instant::now();
-        Self { started: now, next_try: now, give_up: give_up_after.map(|d| now + d), seen: HashSet::new(), reported: false }
+        Self {
+            started: now,
+            next_try: now,
+            give_up: give_up_after.map(|d| now + d),
+            seen: HashSet::new(),
+            reported: false,
+        }
     }
 
     /// One attempt, if it is time for one.
@@ -88,7 +94,11 @@ impl DisplaySearch {
         if display.is_none() && !self.reported && now.duration_since(self.started) >= Self::NOTICE {
             self.reported = true;
             let cards = std::fs::read_dir("/dev/dri")
-                .map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("card")).count())
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.file_name().to_string_lossy().starts_with("card"))
+                        .count()
+                })
                 .unwrap_or(0);
             if cards == 0 {
                 eprintln!(
@@ -112,10 +122,17 @@ extern "C" {
 
 /// Is the switch from the initrd to the real root about to happen?
 fn switch_root_imminent(tl: &bootmap_core::BootTimeline) -> bool {
-    let busy = |n: &str| tl.units.get(n).is_some_and(|u| u.job || u.t_activating.is_some());
+    let busy = |n: &str| {
+        tl.units
+            .get(n)
+            .is_some_and(|u| u.job || u.t_activating.is_some())
+    };
     busy("initrd-switch-root.target")
         || busy("initrd-switch-root.service")
-        || tl.units.get("initrd-cleanup.service").is_some_and(|u| u.t_activating.is_some())
+        || tl
+            .units
+            .get("initrd-cleanup.service")
+            .is_some_and(|u| u.t_activating.is_some())
 }
 
 /// Open `/sysroot` to hold it, if it is a mount point (its device differs from `/`'s).
@@ -141,8 +158,12 @@ fn enter_root(fd: &File) -> std::io::Result<()> {
 }
 
 fn sd_notify(msg: &str) {
-    let Ok(path) = std::env::var("NOTIFY_SOCKET") else { return };
-    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else { return };
+    let Ok(path) = std::env::var("NOTIFY_SOCKET") else {
+        return;
+    };
+    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else {
+        return;
+    };
     if let Some(name) = path.strip_prefix('@') {
         use std::os::linux::net::SocketAddrExt;
         if let Ok(addr) = std::os::unix::net::SocketAddr::from_abstract_name(name) {
@@ -195,7 +216,13 @@ struct Console {
 impl Console {
     /// `display` is already open. `vt` may have been entered earlier (the
     /// shutdown view switches first, to make a compositor let go).
-    fn new(display: Display, vt: Option<Vt>, vt_number: u32, prompts: Prompts, marker: PathBuf) -> Self {
+    fn new(
+        display: Display,
+        vt: Option<Vt>,
+        vt_number: u32,
+        prompts: Prompts,
+        marker: PathBuf,
+    ) -> Self {
         // Our own VT in every case, so that nothing else on the console's VT
         // (a login prompt starting there) takes the screen back. When the
         // console agent is in charge, nobody reads the keyboard here, and the
@@ -209,11 +236,20 @@ impl Console {
             }
             let _ = std::fs::write(&marker, b"");
         }
-        Self { display: Some(display), vt, agent, prompts, marker }
+        Self {
+            display: Some(display),
+            vt,
+            agent,
+            prompts,
+            marker,
+        }
     }
 
     fn present(&mut self, pm: &tiny_skia::Pixmap, background: tiny_skia::Color) -> Result<()> {
-        self.display.as_mut().context("no display")?.present(pm, background)
+        self.display
+            .as_mut()
+            .context("no display")?
+            .present(pm, background)
     }
 
     fn display_gone(&self) -> bool {
@@ -263,8 +299,20 @@ pub struct BootOptions {
     pub vt: u32,
 }
 
-pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_core::config::Look, opts: BootOptions) -> Result<()> {
-    let BootOptions { record, hold, released_marker, shutdown, vt: vt_number } = opts;
+pub fn run(
+    sig: Signals,
+    mut source: Source,
+    graph: GraphArgs,
+    look: bootmap_core::config::Look,
+    opts: BootOptions,
+) -> Result<()> {
+    let BootOptions {
+        record,
+        hold,
+        released_marker,
+        shutdown,
+        vt: vt_number,
+    } = opts;
     let shutdown_from = shutdown.then(|| source.begin_shutdown());
     // A shutdown is not a boot recording: never overwrite the saved timeline.
     let replay = shutdown || matches!(source.mode, crate::live::Mode::Replay { .. });
@@ -332,7 +380,13 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
                             (false, false) => Prompts::Answer,
                             (false, true) => Prompts::Yield,
                         };
-                        console = Some(Console::new(d, early_vt.take(), vt_number, prompts, agent_marker.clone()));
+                        console = Some(Console::new(
+                            d,
+                            early_vt.take(),
+                            vt_number,
+                            prompts,
+                            agent_marker.clone(),
+                        ));
                         if shutdown {
                             eprintln!("bootmap: showing shutdown");
                         }
@@ -340,7 +394,9 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
                 }
             }
         }
-        if !ready && (shutdown || console.is_some() || search.started.elapsed() >= DisplaySearch::NOTICE) {
+        if !ready
+            && (shutdown || console.is_some() || search.started.elapsed() >= DisplaySearch::NOTICE)
+        {
             sd_notify("READY=1");
             ready = true;
         }
@@ -351,10 +407,16 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
                 scene.frame(&mut pm);
                 let res = c.present(&pm, scene.renderer.background());
                 if frames == 0 {
-                    eprintln!("bootmap: first frame in {:?} ({:?})", t0.elapsed(), res.as_ref().err());
+                    eprintln!(
+                        "bootmap: first frame in {:?} ({:?})",
+                        t0.elapsed(),
+                        res.as_ref().err()
+                    );
                 }
                 frames += 1;
-                if res.is_err() || (last_check.elapsed() > Duration::from_millis(500) && c.display_gone()) {
+                if res.is_err()
+                    || (last_check.elapsed() > Duration::from_millis(500) && c.display_gone())
+                {
                     // The device went away. Let go of it; the search takes the
                     // replacement, and the VT and a half-typed passphrase stay.
                     last_check = Instant::now();
@@ -395,7 +457,10 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
                 eprintln!("bootmap: holding /sysroot for the switch to the real root");
             }
         }
-        if let crate::live::Mode::Live { disconnected: true, .. } = scene.source.mode {
+        if let crate::live::Mode::Live {
+            disconnected: true, ..
+        } = scene.source.mode
+        {
             // PID 1 went away. In the initrd that is the switch to the real
             // root: follow it and keep drawing on the same output. Anywhere
             // else (shutdown) there is nothing more to show.
@@ -404,7 +469,9 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
                     .inspect_err(|e| eprintln!("bootmap: could not enter the real root: {e}"))
                     .is_ok(),
                 (true, None) => {
-                    eprintln!("bootmap: lost systemd in the initrd without holding /sysroot; stopping");
+                    eprintln!(
+                        "bootmap: lost systemd in the initrd without holding /sysroot; stopping"
+                    );
                     false
                 }
                 (false, _) => false,
@@ -416,7 +483,11 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, look: bootmap_cor
             in_initrd = false;
             scene.source.reconnect();
         }
-        let pace = if has_display { frame } else { Duration::from_millis(100) };
+        let pace = if has_display {
+            frame
+        } else {
+            Duration::from_millis(100)
+        };
         std::thread::sleep(pace.saturating_sub(t0.elapsed()));
     }
     // Never write a recording from inside the initrd.

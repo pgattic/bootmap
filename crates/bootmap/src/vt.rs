@@ -51,7 +51,8 @@ impl Vt {
         let mut stat = VtStat::default();
         // SAFETY (all ioctls below): `fd` is an open VT, and each request is
         // given the argument type <linux/vt.h> and <linux/kd.h> document.
-        let front = (unsafe { libc::ioctl(fd, VT_GETSTATE, &mut stat) } == 0).then_some(stat.v_active as libc::c_int);
+        let front = (unsafe { libc::ioctl(fd, VT_GETSTATE, &mut stat) } == 0)
+            .then_some(stat.v_active as libc::c_int);
         let back_to = front.filter(|&f| f != n as libc::c_int);
         unsafe {
             libc::ioctl(fd, VT_ACTIVATE, n as libc::c_int);
@@ -74,7 +75,11 @@ impl Vt {
                 libc::tcflush(fd, libc::TCIFLUSH);
             }
         }
-        Some(Self { tty, back_to, saved })
+        Some(Self {
+            tty,
+            back_to,
+            saved,
+        })
     }
 
     /// Keys typed since the last call (never blocks).

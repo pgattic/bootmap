@@ -10,7 +10,9 @@
 
 use anyhow::{Context, Result};
 use drm::buffer::{Buffer, DrmFourcc};
-use drm::control::{connector, crtc, dumbbuffer::DumbBuffer, framebuffer, Device as ControlDevice, Mode};
+use drm::control::{
+    connector, crtc, dumbbuffer::DumbBuffer, framebuffer, Device as ControlDevice, Mode,
+};
 use drm::Device;
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsFd, BorrowedFd};
@@ -77,7 +79,9 @@ impl Head {
             name: format!("{}-{}", info.interface().as_str(), info.interface_id()),
             internal: matches!(
                 info.interface(),
-                connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
+                connector::Interface::EmbeddedDisplayPort
+                    | connector::Interface::LVDS
+                    | connector::Interface::DSI
             ),
             conn: info.handle(),
             crtc,
@@ -103,7 +107,12 @@ impl Head {
             for y in 0..h {
                 let s = &src[y * w * 4..(y + 1) * w * 4];
                 let d = &mut dst[y * pitch..y * pitch + w * 4];
-                for (dp, sp) in d.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
+                for (dp, sp) in d
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(s.as_chunks::<4>().0)
+                {
                     // RGBA (opaque) -> XRGB8888 little endian = B, G, R, X
                     dp[0] = sp[2];
                     dp[1] = sp[1];
@@ -115,7 +124,12 @@ impl Head {
 
         // One full-screen clip: an empty list is rejected with EINVAL
         // (the kernel wants num_clips and clips_ptr both zero or both set).
-        let full = drm::control::ClipRect::new(0, 0, self.size.0.min(u16::MAX as u32) as u16, self.size.1.min(u16::MAX as u32) as u16);
+        let full = drm::control::ClipRect::new(
+            0,
+            0,
+            self.size.0.min(u16::MAX as u32) as u16,
+            self.size.1.min(u16::MAX as u32) as u16,
+        );
         if let Err(e) = self.card.dirty_framebuffer(self.fb, &[full]) {
             // ENOSYS: the driver scans out the buffer directly and needs no flush.
             if !self.dirty_warned && e.raw_os_error() != Some(38) {
@@ -137,10 +151,23 @@ impl Head {
             None => Pixmap::new(w, h).context("pixmap")?,
         };
         let s = (w as f32 / pm.width() as f32).min(h as f32 / pm.height() as f32);
-        let (dx, dy) = ((w as f32 - pm.width() as f32 * s) / 2.0, (h as f32 - pm.height() as f32 * s) / 2.0);
+        let (dx, dy) = (
+            (w as f32 - pm.width() as f32 * s) / 2.0,
+            (h as f32 - pm.height() as f32 * s) / 2.0,
+        );
         scaled.fill(background);
-        let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
-        scaled.draw_pixmap(0, 0, pm.as_ref(), &paint, Transform::from_scale(s, s).post_translate(dx, dy), None);
+        let paint = PixmapPaint {
+            quality: FilterQuality::Bilinear,
+            ..Default::default()
+        };
+        scaled.draw_pixmap(
+            0,
+            0,
+            pm.as_ref(),
+            &paint,
+            Transform::from_scale(s, s).post_translate(dx, dy),
+            None,
+        );
         let res = self.blit(&scaled);
         self.scaled = Some(scaled);
         res
@@ -166,7 +193,10 @@ impl Drop for Head {
 fn preferred_mode(modes: &[Mode]) -> Mode {
     modes
         .iter()
-        .find(|m| m.mode_type().contains(drm::control::ModeTypeFlags::PREFERRED))
+        .find(|m| {
+            m.mode_type()
+                .contains(drm::control::ModeTypeFlags::PREFERRED)
+        })
         .copied()
         .unwrap_or(modes[0])
 }
@@ -174,26 +204,43 @@ fn preferred_mode(modes: &[Mode]) -> Mode {
 /// Take every connected output of one card. `Err` if it has none we can use.
 fn open_card(path: &Path, problems: &mut Vec<String>) -> Result<Vec<Head>> {
     let file = OpenOptions::new().read(true).write(true).open(path)?;
-    let card = Rc::new(Card { file, path: path.to_path_buf() });
+    let card = Rc::new(Card {
+        file,
+        path: path.to_path_buf(),
+    });
     let _ = card.acquire_master_lock();
     let res = card.resource_handles().context("not a KMS device")?;
     let mut taken: Vec<crtc::Handle> = vec![];
     let mut heads = vec![];
     for &c in res.connectors() {
-        let Ok(info) = card.get_connector(c, true) else { continue };
+        let Ok(info) = card.get_connector(c, true) else {
+            continue;
+        };
         if info.state() != connector::State::Connected || info.modes().is_empty() {
             continue;
         }
         // Each output needs a CRTC to itself: the one it already uses if
         // that is free, else any its encoders can drive.
-        let current = info.current_encoder().and_then(|e| card.get_encoder(e).ok()).and_then(|e| e.crtc());
+        let current = info
+            .current_encoder()
+            .and_then(|e| card.get_encoder(e).ok())
+            .and_then(|e| e.crtc());
         let possible = info
             .encoders()
             .iter()
             .filter_map(|&e| card.get_encoder(e).ok())
             .flat_map(|e| res.filter_crtcs(e.possible_crtcs()));
-        let Some(crtc) = current.into_iter().chain(possible).find(|c| !taken.contains(c)) else {
-            problems.push(format!("{}: no free CRTC for {:?}-{}", path.display(), info.interface(), info.interface_id()));
+        let Some(crtc) = current
+            .into_iter()
+            .chain(possible)
+            .find(|c| !taken.contains(c))
+        else {
+            problems.push(format!(
+                "{}: no free CRTC for {:?}-{}",
+                path.display(),
+                info.interface(),
+                info.interface_id()
+            ));
             continue;
         };
         match Head::open(&card, &info, crtc) {
@@ -201,7 +248,12 @@ fn open_card(path: &Path, problems: &mut Vec<String>) -> Result<Vec<Head>> {
                 taken.push(crtc);
                 heads.push(h);
             }
-            Err(e) => problems.push(format!("{}: {}-{}: {e:#}", path.display(), info.interface().as_str(), info.interface_id())),
+            Err(e) => problems.push(format!(
+                "{}: {}-{}: {e:#}",
+                path.display(),
+                info.interface().as_str(),
+                info.interface_id()
+            )),
         }
     }
     if heads.is_empty() {
@@ -211,7 +263,11 @@ fn open_card(path: &Path, problems: &mut Vec<String>) -> Result<Vec<Head>> {
 }
 
 fn is_simpledrm(card: &Path) -> bool {
-    let name = card.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let name = card
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     std::fs::read_link(format!("/sys/class/drm/{name}/device/driver"))
         .map(|d| d.to_string_lossy().contains("simple"))
         .unwrap_or(false)
@@ -234,7 +290,10 @@ impl Display {
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.path())
-                    .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("card")))
+                    .filter(|p| {
+                        p.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("card"))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -261,11 +320,30 @@ impl Display {
             return None;
         }
         // Primary first: the built-in panel, else the largest.
-        heads.sort_by_key(|h| (!h.internal, std::cmp::Reverse(h.size.0 as u64 * h.size.1 as u64)));
+        heads.sort_by_key(|h| {
+            (
+                !h.internal,
+                std::cmp::Reverse(h.size.0 as u64 * h.size.1 as u64),
+            )
+        });
         let p = &heads[0];
-        eprintln!("bootmap: drawing on {} at {}x{} ({}, {}x{} mm)", p.card.path.display(), p.size.0, p.size.1, p.name, p.mm.0, p.mm.1);
+        eprintln!(
+            "bootmap: drawing on {} at {}x{} ({}, {}x{} mm)",
+            p.card.path.display(),
+            p.size.0,
+            p.size.1,
+            p.name,
+            p.mm.0,
+            p.mm.1
+        );
         for h in &heads[1..] {
-            eprintln!("bootmap: mirroring to {} at {}x{} on {}", h.name, h.size.0, h.size.1, h.card.path.display());
+            eprintln!(
+                "bootmap: mirroring to {} at {}x{} on {}",
+                h.name,
+                h.size.0,
+                h.size.1,
+                h.card.path.display()
+            );
         }
         Some(Self { heads })
     }
@@ -304,6 +382,8 @@ impl Display {
     /// `/dev/dri` itself is missing (`/dev` moved away in the switch to the
     /// real root, before we chroot), the device was not replaced.
     pub fn gone(&self) -> bool {
-        self.heads.iter().any(|h| !h.card.path.exists() && h.card.path.parent().is_some_and(|d| d.exists()))
+        self.heads
+            .iter()
+            .any(|h| !h.card.path.exists() && h.card.path.parent().is_some_and(|d| d.exists()))
     }
 }

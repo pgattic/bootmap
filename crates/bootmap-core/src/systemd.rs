@@ -16,9 +16,9 @@ use dbus::blocking::{Connection, Proxy};
 use dbus::channel::{Channel, MatchingReceiver};
 use dbus::message::{MatchRule, MessageType};
 use dbus::{Message, Path as DPath};
-use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const DEST: &str = "org.freedesktop.systemd1";
@@ -77,13 +77,23 @@ impl Systemd {
             }
         }
         let conn = Connection::new_system().context("connecting to the system bus")?;
-        Ok(Self { conn, p2p: false, path_to_name: HashMap::new(), subscribed: false })
+        Ok(Self {
+            conn,
+            p2p: false,
+            path_to_name: HashMap::new(),
+            subscribed: false,
+        })
     }
 
     fn connect_private() -> Result<Self> {
         // Peer-to-peer: no Hello / register().
         let ch = Channel::open_private(&format!("unix:path={PRIVATE_SOCKET}"))?;
-        let sd = Self { conn: Connection::from(ch), p2p: true, path_to_name: HashMap::new(), subscribed: false };
+        let sd = Self {
+            conn: Connection::from(ch),
+            p2p: true,
+            path_to_name: HashMap::new(),
+            subscribed: false,
+        };
         sd.prime();
         Ok(sd)
     }
@@ -102,7 +112,8 @@ impl Systemd {
         debug("prime");
         let name = format!("{}.service", "bootmap-primer-".repeat(24));
         let _: std::result::Result<(DPath<'static>,), _> =
-            self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "GetUnit", (name,));
+            self.proxy(MANAGER_PATH)
+                .method_call(MANAGER_IFACE, "GetUnit", (name,));
     }
 
     pub fn is_private(&self) -> bool {
@@ -135,7 +146,11 @@ impl Systemd {
             initrd: get("InitRDTimestampMonotonic")?,
             userspace: get("UserspaceTimestampMonotonic")?,
             // An initrd never "finishes" the boot.
-            finish: if in_initrd { 0 } else { get("FinishTimestampMonotonic")? },
+            finish: if in_initrd {
+                0
+            } else {
+                get("FinishTimestampMonotonic")?
+            },
             // Newer systemd only; absent means "not shutting down".
             shutdown_start: get("ShutdownStartTimestampMonotonic").unwrap_or(0),
             in_initrd,
@@ -146,8 +161,11 @@ impl Systemd {
         // Empty state and pattern lists mean "all loaded units".
         debug("ListUnitsByPatterns");
         let none: Vec<&str> = vec![];
-        let (rows,): (Vec<ListUnitsRow>,) =
-            self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "ListUnitsByPatterns", (none.clone(), none))?;
+        let (rows,): (Vec<ListUnitsRow>,) = self.proxy(MANAGER_PATH).method_call(
+            MANAGER_IFACE,
+            "ListUnitsByPatterns",
+            (none.clone(), none),
+        )?;
         Ok(rows)
     }
 
@@ -168,7 +186,9 @@ impl Systemd {
         if matches!(u.state, UnitState::Inactive | UnitState::Failed) {
             let t = nonzero(get_u64(&p, "InactiveEnterTimestampMonotonic"));
             // Only if it stopped after its latest start (not a restart in progress).
-            u.t_inactive = t.filter(|&t| u.t_activating.is_some_and(|a| t >= a) && u.t_active.is_none_or(|a| t >= a));
+            u.t_inactive = t.filter(|&t| {
+                u.t_activating.is_some_and(|a| t >= a) && u.t_active.is_none_or(|a| t >= a)
+            });
         }
         if let Some(iface) = cgroup_iface(u.kind) {
             if let Ok(sp) = self.get_all(path, iface) {
@@ -182,8 +202,10 @@ impl Systemd {
     }
 
     fn fetch_unit_by_name(&mut self, name: &str) -> Option<Unit> {
-        let (path,): (DPath<'static>,) =
-            self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "GetUnit", (name,)).ok()?;
+        let (path,): (DPath<'static>,) = self
+            .proxy(MANAGER_PATH)
+            .method_call(MANAGER_IFACE, "GetUnit", (name,))
+            .ok()?;
         let path = path.to_string();
         let u = self.fetch_unit(&path).ok()?;
         self.path_to_name.insert(path, u.name.clone());
@@ -196,7 +218,9 @@ impl Systemd {
             return Ok(());
         }
         debug("Subscribe");
-        let _: () = self.proxy(MANAGER_PATH).method_call(MANAGER_IFACE, "Subscribe", ())?;
+        let _: () = self
+            .proxy(MANAGER_PATH)
+            .method_call(MANAGER_IFACE, "Subscribe", ())?;
         if !self.p2p {
             let mut rule = MatchRule::new();
             rule.msg_type = Some(MessageType::Signal);
@@ -259,7 +283,9 @@ impl Systemd {
                 return Ok(());
             }
             loop {
-                let Some(msg) = queue.lock().unwrap().pop_front() else { break };
+                let Some(msg) = queue.lock().unwrap().pop_front() else {
+                    break;
+                };
                 for m in self.handle_signal(&msg) {
                     if !send(m) {
                         return Ok(());
@@ -275,16 +301,22 @@ impl Systemd {
         let mut out = vec![];
         match member.as_str() {
             "UnitNew" => {
-                let Ok((name, upath)) = msg.read2::<String, DPath>() else { return out };
+                let Ok((name, upath)) = msg.read2::<String, DPath>() else {
+                    return out;
+                };
                 let upath = upath.to_string();
                 if self.path_to_name.contains_key(&upath) {
                     return out;
                 }
                 self.path_to_name.insert(upath.clone(), name.clone());
-                out.push(LiveMsg::UnitNew(self.fetch_unit(&upath).unwrap_or_else(|_| Unit::new(name))));
+                out.push(LiveMsg::UnitNew(
+                    self.fetch_unit(&upath).unwrap_or_else(|_| Unit::new(name)),
+                ));
             }
             "JobNew" => {
-                let Ok((_id, _job, name)) = msg.read3::<u32, DPath, String>() else { return out };
+                let Ok((_id, _job, name)) = msg.read3::<u32, DPath, String>() else {
+                    return out;
+                };
                 if !self.path_to_name.values().any(|n| *n == name) {
                     if let Some(u) = self.fetch_unit_by_name(&name) {
                         out.push(LiveMsg::UnitNew(u));
@@ -295,15 +327,23 @@ impl Systemd {
             "JobRemoved" => {
                 // (id, job, unit, result). A job skipped for an unmet
                 // condition leaves its unit inactive: it is no longer pending.
-                let Ok((_id, _job, name, _result)) = msg.read4::<u32, DPath, String, String>() else { return out };
+                let Ok((_id, _job, name, _result)) = msg.read4::<u32, DPath, String, String>()
+                else {
+                    return out;
+                };
                 out.push(LiveMsg::JobDone(name));
             }
             "PropertiesChanged" => {
-                let Ok((iface, changed, _inval)) = msg.read3::<String, PropMap, Vec<String>>() else { return out };
+                let Ok((iface, changed, _inval)) = msg.read3::<String, PropMap, Vec<String>>()
+                else {
+                    return out;
+                };
                 if iface != UNIT_IFACE {
                     return out;
                 }
-                let Some(raw) = prop_cast::<String>(&changed, "ActiveState") else { return out };
+                let Some(raw) = prop_cast::<String>(&changed, "ActiveState") else {
+                    return out;
+                };
                 let state = UnitState::from_systemd(raw);
                 let name = match self.path_to_name.get(&path) {
                     Some(n) => n.clone(),
@@ -332,7 +372,11 @@ impl Systemd {
                     return out;
                 }
                 let t = stamp.unwrap_or_else(monotonic_now);
-                out.push(LiveMsg::Event(Event { t, unit: name, state }));
+                out.push(LiveMsg::Event(Event {
+                    t,
+                    unit: name,
+                    state,
+                }));
             }
             "StartupFinished" => {
                 if let Ok(ph) = self.phases() {
@@ -378,18 +422,27 @@ fn read_cgroup_procs(cg: &str) -> Vec<Process> {
 }
 
 fn read_trim(p: &str) -> String {
-    std::fs::read_to_string(p).map(|s| s.trim().to_string()).unwrap_or_default()
+    std::fs::read_to_string(p)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn is_root() -> bool {
-    std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0).unwrap_or(false)
+    std::fs::metadata("/proc/self")
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0)
+        .unwrap_or(false)
 }
 
 /// CLOCK_MONOTONIC in µs (same clock as systemd's `*TimestampMonotonic`).
 pub fn monotonic_now() -> Usec {
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: clock_gettime writes into a valid timespec.
-    unsafe { clock_gettime(1 /* CLOCK_MONOTONIC */, &mut ts) };
+    unsafe {
+        clock_gettime(1 /* CLOCK_MONOTONIC */, &mut ts)
+    };
     ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
 }
 

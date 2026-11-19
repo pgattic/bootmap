@@ -8,11 +8,13 @@ on:
 
 jobs:
   lint:
-    name: Clippy
+    name: Rustfmt and Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+      - name: Code is formatted with cargo fmt
+        run: nix develop -c cargo fmt --all --check
       - name: Clippy on every build variant, warnings are errors
         run: |
           variants=(

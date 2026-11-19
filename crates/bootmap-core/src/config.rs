@@ -41,9 +41,14 @@ pub struct Rgb8(pub u8, pub u8, pub u8);
 impl Rgb8 {
     /// `#rrggbb` or `#rgb`.
     pub fn parse(s: &str) -> Result<Self> {
-        let hex = s.strip_prefix('#').with_context(|| format!("color {s:?} must start with '#'"))?;
+        let hex = s
+            .strip_prefix('#')
+            .with_context(|| format!("color {s:?} must start with '#'"))?;
         let digit = |c: u8| -> Result<u8> {
-            (c as char).to_digit(16).map(|d| d as u8).with_context(|| format!("color {s:?} is not hexadecimal"))
+            (c as char)
+                .to_digit(16)
+                .map(|d| d as u8)
+                .with_context(|| format!("color {s:?} is not hexadecimal"))
         };
         let b = hex.as_bytes();
         match b.len() {
@@ -52,7 +57,11 @@ impl Rgb8 {
                 digit(b[2])? << 4 | digit(b[3])?,
                 digit(b[4])? << 4 | digit(b[5])?,
             )),
-            3 => Ok(Self(digit(b[0])? * 17, digit(b[1])? * 17, digit(b[2])? * 17)),
+            3 => Ok(Self(
+                digit(b[0])? * 17,
+                digit(b[1])? * 17,
+                digit(b[2])? * 17,
+            )),
             _ => bail!("color {s:?} must be #rrggbb or #rgb"),
         }
     }
@@ -171,7 +180,14 @@ pub struct Show {
 
 impl Default for Show {
     fn default() -> Self {
-        Self { status: true, activity: true, legend: true, phases: true, labels: true, extra_edges: true }
+        Self {
+            status: true,
+            activity: true,
+            legend: true,
+            phases: true,
+            labels: true,
+            extra_edges: true,
+        }
     }
 }
 
@@ -206,7 +222,9 @@ pub struct Look {
 
 impl Default for Look {
     fn default() -> Self {
-        Config::default().resolve().expect("the default configuration resolves")
+        Config::default()
+            .resolve()
+            .expect("the default configuration resolves")
     }
 }
 
@@ -222,7 +240,8 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("in {}", path.display()))
     }
 
@@ -269,7 +288,8 @@ impl Config {
     pub fn resolve(&self) -> Result<Look> {
         let font = match &self.font {
             Some(path) => {
-                let bytes = std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
+                let bytes = std::fs::read(path)
+                    .with_context(|| format!("reading font {}", path.display()))?;
                 fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default())
                     .map_err(|e| anyhow::anyhow!("font {}: {e}", path.display()))?;
                 Some(bytes)
@@ -328,7 +348,11 @@ mod tests {
         assert_eq!(p.background, Rgb8(0, 0, 0));
         assert_eq!(p.active, Rgb8(0x7e, 0xba, 0xe4));
         assert_eq!(p.failed, Rgb8(0xff, 0, 0));
-        assert_eq!(p.target, Theme::Dark.palette().target, "untouched colors come from the theme");
+        assert_eq!(
+            p.target,
+            Theme::Dark.palette().target,
+            "untouched colors come from the theme"
+        );
         assert!(!c.show.legend && !c.show.extra_edges && c.show.labels);
         let look = c.resolve().unwrap();
         assert_eq!(look.text_scale, 1.5);

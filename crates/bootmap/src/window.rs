@@ -59,16 +59,23 @@ impl ApplicationHandler for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1400.0, 900.0));
         let window = Rc::new(el.create_window(attrs).expect("create window"));
         let ctx = softbuffer::Context::new(window.clone()).expect("softbuffer context");
-        self.surface = Some(softbuffer::Surface::new(&ctx, window.clone()).expect("softbuffer surface"));
+        self.surface =
+            Some(softbuffer::Surface::new(&ctx, window.clone()).expect("softbuffer surface"));
         self.window = Some(window);
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, ev: WindowEvent) {
         match ev {
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } => {
-                self.key(el, logical_key)
-            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => self.key(el, logical_key),
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 self.cursor_moved(x, y);
@@ -78,7 +85,11 @@ impl ApplicationHandler for App {
                     self.scene.hover = None;
                 }
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
                 ElementState::Pressed => self.press(),
                 ElementState::Released => self.release(),
             },
@@ -89,7 +100,9 @@ impl ApplicationHandler for App {
                 };
                 let (w, h) = self.size();
                 self.scene.auto_fit = false;
-                self.scene.cam.zoom_at(w, h, self.cursor.0, self.cursor.1, 1.15f32.powf(lines));
+                self.scene
+                    .cam
+                    .zoom_at(w, h, self.cursor.0, self.cursor.1, 1.15f32.powf(lines));
             }
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -109,7 +122,10 @@ impl ApplicationHandler for App {
 
 impl App {
     fn size(&self) -> (f32, f32) {
-        self.pixmap.as_ref().map(|p| (p.width() as f32, p.height() as f32)).unwrap_or((1.0, 1.0))
+        self.pixmap
+            .as_ref()
+            .map(|p| (p.width() as f32, p.height() as f32))
+            .unwrap_or((1.0, 1.0))
     }
 
     fn key(&mut self, el: &ActiveEventLoop, key: Key) {
@@ -151,7 +167,11 @@ impl App {
                 let hit = self.scene.pick(w, h, x, y);
                 self.scene.hover = hit.map(|i| self.scene.node_name(i));
                 if let Some(win) = &self.window {
-                    win.set_cursor(if hit.is_some() { CursorIcon::Pointer } else { CursorIcon::Default });
+                    win.set_cursor(if hit.is_some() {
+                        CursorIcon::Pointer
+                    } else {
+                        CursorIcon::Default
+                    });
                 }
             }
         }
@@ -187,11 +207,15 @@ impl App {
     }
 
     fn draw(&mut self) {
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else { return };
+        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
+            return;
+        };
         let size = window.inner_size();
         // The desktop's scale for this window (follows it across monitors).
         self.scene.renderer.ui_scale = window.scale_factor() as f32;
-        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
+        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+            return;
+        };
         if surface.resize(w, h).is_err() {
             return;
         }
@@ -200,7 +224,9 @@ impl App {
             slot => slot.insert(tiny_skia::Pixmap::new(w.get(), h.get()).expect("pixmap")),
         };
         self.scene.frame(pm);
-        let Ok(mut buf) = surface.buffer_mut() else { return };
+        let Ok(mut buf) = surface.buffer_mut() else {
+            return;
+        };
         for (dst, px) in buf.iter_mut().zip(pm.data().as_chunks::<4>().0) {
             // Background is opaque, so premultiplied == straight here.
             *dst = (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32;

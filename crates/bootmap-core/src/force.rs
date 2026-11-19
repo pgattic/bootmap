@@ -39,7 +39,13 @@ pub struct ForceParams {
 
 impl Default for ForceParams {
     fn default() -> Self {
-        Self { radial: 0.5, charge: -45.0, link_distance: 32.0, extra_link: 0.08, gravity: 0.03 }
+        Self {
+            radial: 0.5,
+            charge: -45.0,
+            link_distance: 32.0,
+            extra_link: 0.08,
+            gravity: 0.03,
+        }
     }
 }
 
@@ -77,7 +83,13 @@ pub struct Sim {
 impl Sim {
     /// New simulation seeded from the radial layout.
     pub fn new(lay: &Layout, params: ForceParams) -> Self {
-        let mut s = Self { params, bodies: vec![], links: vec![], alpha: 1.0, alpha_target: 0.0 };
+        let mut s = Self {
+            params,
+            bodies: vec![],
+            links: vec![],
+            alpha: 1.0,
+            alpha_target: 0.0,
+        };
         s.rebuild(lay);
         s.alpha = 1.0;
         s
@@ -92,7 +104,10 @@ impl Sim {
         for (i, n) in lay.nodes.iter().enumerate() {
             let target_r = radius(n.depth) * RING;
             if let Some(b) = old.get(n.name.as_str()) {
-                bodies.push(Body { target_r, ..(*b).clone() });
+                bodies.push(Body {
+                    target_r,
+                    ..(*b).clone()
+                });
                 continue;
             }
             added = true;
@@ -102,13 +117,25 @@ impl Sim {
                 (x * RING, y * RING)
             } else {
                 // Spawn just outside the parent, nudged by a stable jitter.
-                let p = n.parent.and_then(|p| bodies.get(p)).map(|b| (b.x, b.y)).unwrap_or((0.0, 0.0));
+                let p = n
+                    .parent
+                    .and_then(|p| bodies.get(p))
+                    .map(|b| (b.x, b.y))
+                    .unwrap_or((0.0, 0.0));
                 let a = hash_angle(&n.name);
                 let d = self.params.link_distance * 0.5;
                 (p.0 + d * a.cos(), p.1 + d * a.sin())
             };
             let fixed = (i == ROOT).then_some((0.0, 0.0));
-            bodies.push(Body { name: n.name.clone(), x, y, vx: 0.0, vy: 0.0, fixed, target_r });
+            bodies.push(Body {
+                name: n.name.clone(),
+                x,
+                y,
+                vx: 0.0,
+                vy: 0.0,
+                fixed,
+                target_r,
+            });
         }
         // Keep user pins across rebuilds, and always pin the center.
         if let Some(b) = bodies.get_mut(ROOT) {
@@ -139,9 +166,17 @@ impl Sim {
                 Link {
                     a,
                     b,
-                    strength: if tree { base } else { base * self.params.extra_link },
+                    strength: if tree {
+                        base
+                    } else {
+                        base * self.params.extra_link
+                    },
                     bias: ca / (ca + cb),
-                    distance: if tree { self.params.link_distance } else { self.params.link_distance * 2.5 },
+                    distance: if tree {
+                        self.params.link_distance
+                    } else {
+                        self.params.link_distance * 2.5
+                    },
                 }
             })
             .collect();
@@ -186,7 +221,10 @@ impl Sim {
 
     /// Positions in world units, indexed like `Layout::nodes`.
     pub fn positions(&self) -> Vec<(f32, f32)> {
-        self.bodies.iter().map(|b| (b.x / RING, b.y / RING)).collect()
+        self.bodies
+            .iter()
+            .map(|b| (b.x / RING, b.y / RING))
+            .collect()
     }
 
     /// Run until cooled (or `max_ticks`).
@@ -306,7 +344,13 @@ mod tests {
 
     fn settled(radial: f32) -> (Layout, Sim) {
         let lay = layout();
-        let mut s = Sim::new(&lay, ForceParams { radial, ..Default::default() });
+        let mut s = Sim::new(
+            &lay,
+            ForceParams {
+                radial,
+                ..Default::default()
+            },
+        );
         s.settle(1000);
         (lay, s)
     }

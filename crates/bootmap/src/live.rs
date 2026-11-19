@@ -2,21 +2,33 @@
 //!
 //! Each frontend (viewer, boot mode, tools) is a cargo feature and uses part
 //! of this; a build with only some of them leaves the rest unused.
-#![cfg_attr(not(all(feature = "window", feature = "drm", feature = "tools")), allow(dead_code))]
+#![cfg_attr(
+    not(all(feature = "window", feature = "drm", feature = "tools")),
+    allow(dead_code)
+)]
 
 use crate::GraphArgs;
 use anyhow::Result;
-use bootmap_core::model::Usec;
-use bootmap_core::systemd::{monotonic_now, LiveMsg, Systemd};
-use bootmap_core::render::{Camera, Frame};
 use bootmap_core::config::Look;
+use bootmap_core::model::Usec;
+use bootmap_core::render::{Camera, Frame};
+use bootmap_core::systemd::{monotonic_now, LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, ForceParams, Layout, LayoutOptions, Renderer, Sim};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
 pub enum Mode {
-    Replay { speed: f32, base: Usec, started: Instant, paused_at: Option<Usec> },
-    Live { rx: Receiver<LiveMsg>, finished_at: Option<Instant>, disconnected: bool },
+    Replay {
+        speed: f32,
+        base: Usec,
+        started: Instant,
+        paused_at: Option<Usec>,
+    },
+    Live {
+        rx: Receiver<LiveMsg>,
+        finished_at: Option<Instant>,
+        disconnected: bool,
+    },
 }
 
 pub struct Source {
@@ -29,14 +41,29 @@ impl Source {
         let (start, _) = tl.span();
         // Lead in slightly before userspace starts.
         let base = start.saturating_sub(200_000);
-        Self { tl, mode: Mode::Replay { speed, base, started: Instant::now(), paused_at: None } }
+        Self {
+            tl,
+            mode: Mode::Replay {
+                speed,
+                base,
+                started: Instant::now(),
+                paused_at: None,
+            },
+        }
     }
 
     pub fn live() -> Result<Self> {
         let mut sd = Systemd::connect()?;
         let tl = sd.snapshot()?;
         let rx = crate::spawn_watcher(sd);
-        Ok(Self { tl, mode: Mode::Live { rx, finished_at: None, disconnected: false } })
+        Ok(Self {
+            tl,
+            mode: Mode::Live {
+                rx,
+                finished_at: None,
+                disconnected: false,
+            },
+        })
     }
 
     /// Shutdown view: when the shutdown began, after marking units that were
@@ -55,7 +82,11 @@ impl Source {
             .map(|u| u.name.clone())
             .collect();
         for unit in stopping {
-            self.tl.apply(bootmap_core::Event { t: now, unit, state: bootmap_core::UnitState::Deactivating });
+            self.tl.apply(bootmap_core::Event {
+                t: now,
+                unit,
+                state: bootmap_core::UnitState::Deactivating,
+            });
         }
         from
     }
@@ -63,7 +94,14 @@ impl Source {
     /// Drain pending changes. Returns true if the set of units changed
     /// (a re-layout is needed).
     pub fn poll(&mut self) -> bool {
-        let Mode::Live { rx, finished_at, disconnected } = &mut self.mode else { return false };
+        let Mode::Live {
+            rx,
+            finished_at,
+            disconnected,
+        } = &mut self.mode
+        else {
+            return false;
+        };
         let mut structural = false;
         loop {
             match rx.try_recv() {
@@ -74,7 +112,11 @@ impl Source {
                     }
                 }
                 Ok(LiveMsg::Job(name)) => {
-                    let u = self.tl.units.entry(name.clone()).or_insert_with(|| bootmap_core::Unit::new(name));
+                    let u = self
+                        .tl
+                        .units
+                        .entry(name.clone())
+                        .or_insert_with(|| bootmap_core::Unit::new(name));
                     if !u.job && u.t_activating.is_none() {
                         structural = true;
                     }
@@ -89,7 +131,11 @@ impl Source {
                     }
                 }
                 Ok(LiveMsg::Event(ev)) => {
-                    let first_start = self.tl.units.get(&ev.unit).is_none_or(|u| u.t_activating.is_none());
+                    let first_start = self
+                        .tl
+                        .units
+                        .get(&ev.unit)
+                        .is_none_or(|u| u.t_activating.is_none());
                     // Timestamps feed the layout ordering; re-layout on first start.
                     // A unit that fails leaves its template group: re-lay out then too.
                     let failed = ev.state == bootmap_core::UnitState::Failed;
@@ -124,7 +170,10 @@ impl Source {
     /// closes and the usual disconnect path takes over again.
     #[cfg(feature = "drm")]
     pub fn reconnect(&mut self) {
-        if let Mode::Live { rx, disconnected, .. } = &mut self.mode {
+        if let Mode::Live {
+            rx, disconnected, ..
+        } = &mut self.mode
+        {
             *rx = crate::spawn_reconnecting_watcher();
             *disconnected = false;
         }
@@ -133,7 +182,12 @@ impl Source {
     /// Current time on the boot clock (monotonic µs).
     pub fn now(&self) -> Usec {
         match &self.mode {
-            Mode::Replay { speed, base, started, paused_at } => paused_at.unwrap_or_else(|| {
+            Mode::Replay {
+                speed,
+                base,
+                started,
+                paused_at,
+            } => paused_at.unwrap_or_else(|| {
                 let (_, end) = self.tl.span();
                 // Run on past the last event until the picture has settled.
                 let end = end + bootmap_core::render::SETTLE_USEC;
@@ -160,7 +214,13 @@ impl Source {
 
     pub fn toggle_pause(&mut self) {
         let now = self.now();
-        if let Mode::Replay { speed, base, started, paused_at } = &mut self.mode {
+        if let Mode::Replay {
+            speed,
+            base,
+            started,
+            paused_at,
+        } = &mut self.mode
+        {
             match paused_at.take() {
                 Some(t) => {
                     *base = t;
@@ -178,7 +238,13 @@ impl Source {
         let (start, end) = self.tl.span();
         let end = end + bootmap_core::render::SETTLE_USEC;
         let lo = start.saturating_sub(200_000);
-        if let Mode::Replay { base, started, paused_at, .. } = &mut self.mode {
+        if let Mode::Replay {
+            base,
+            started,
+            paused_at,
+            ..
+        } = &mut self.mode
+        {
             let t = (now as i64 + (secs * 1e6) as i64).clamp(lo as i64, end as i64) as Usec;
             match paused_at {
                 Some(p) => *p = t,
@@ -191,7 +257,13 @@ impl Source {
     }
 
     pub fn restart(&mut self) {
-        if let Mode::Replay { base, started, paused_at, .. } = &mut self.mode {
+        if let Mode::Replay {
+            base,
+            started,
+            paused_at,
+            ..
+        } = &mut self.mode
+        {
             let (start, _) = self.tl.span();
             *base = start.saturating_sub(200_000);
             *started = Instant::now();
@@ -232,14 +304,24 @@ impl Scene {
     pub fn new(source: Source, graph: &GraphArgs, look: Look) -> Self {
         let opts = graph.layout_options();
         let layout = Layout::compute(&source.tl, &opts);
-        let sim = Sim::new(&layout, ForceParams { radial: graph.radial, ..Default::default() });
+        let sim = Sim::new(
+            &layout,
+            ForceParams {
+                radial: graph.radial,
+                ..Default::default()
+            },
+        );
         let pos = sim.positions();
         Self {
             sim,
             pos,
             layout,
             renderer: Renderer::new(graph.render_options(), look),
-            cam: Camera { cx: 0.0, cy: 0.0, scale: 50.0 },
+            cam: Camera {
+                cx: 0.0,
+                cy: 0.0,
+                scale: 50.0,
+            },
             auto_fit: true,
             snap: true,
             hover: None,
@@ -259,7 +341,8 @@ impl Scene {
     }
 
     fn index(&self, name: &Option<String>) -> Option<usize> {
-        name.as_ref().and_then(|n| self.layout.index.get(n).copied())
+        name.as_ref()
+            .and_then(|n| self.layout.index.get(n).copied())
     }
 
     /// Run physics to rest (for still renders).
@@ -276,7 +359,8 @@ impl Scene {
 
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32) -> Option<usize> {
         // Pointer reach scales with the screen, like the dots.
-        self.frame_desc(None).pick(w, h, px, py, 14.0 * self.renderer.ui_scale)
+        self.frame_desc(None)
+            .pick(w, h, px, py, 14.0 * self.renderer.ui_scale)
     }
 
     pub fn node_name(&self, i: usize) -> String {
@@ -309,17 +393,30 @@ impl Scene {
     }
 
     fn frame_desc(&self, hover: Option<usize>) -> Frame<'_> {
-        Frame { lay: &self.layout, pos: &self.pos, cam: self.cam, hover }
+        Frame {
+            lay: &self.layout,
+            pos: &self.pos,
+            cam: self.cam,
+            hover,
+        }
     }
 
     fn update_camera(&mut self, w: f32, h: f32) {
         if !self.auto_fit {
             return;
         }
-        let label_room = if self.renderer.opts.labels { 70.0 } else { 20.0 };
+        let label_room = if self.renderer.opts.labels {
+            70.0
+        } else {
+            20.0
+        };
         let margin = 0.05 * w.min(h) + label_room * self.renderer.ui_scale;
         let target = Camera::fit(&self.pos, w, h, margin);
-        self.cam = if self.snap { target } else { self.cam.lerp(target, 0.08) };
+        self.cam = if self.snap {
+            target
+        } else {
+            self.cam.lerp(target, 0.08)
+        };
         self.snap = false;
     }
 
@@ -367,7 +464,12 @@ impl Scene {
     /// Draw as things stand, at boot time `t`; `wall` (seconds) drives the
     /// pulsing of units that are starting.
     pub fn draw(&mut self, pm: &mut tiny_skia::Pixmap, t: Usec, wall: f32) {
-        let frame = Frame { lay: &self.layout, pos: &self.pos, cam: self.cam, hover: self.index(&self.hover) };
+        let frame = Frame {
+            lay: &self.layout,
+            pos: &self.pos,
+            cam: self.cam,
+            hover: self.index(&self.hover),
+        };
         self.renderer.render(pm, &frame, &self.source.tl, t, wall);
     }
 }
@@ -409,12 +511,21 @@ mod tests {
 
     fn live_source() -> (Source, mpsc::Sender<LiveMsg>) {
         let (tx, rx) = mpsc::channel();
-        let src = Source { tl: BootTimeline::default(), mode: Mode::Live { rx, finished_at: None, disconnected: false } };
+        let src = Source {
+            tl: BootTimeline::default(),
+            mode: Mode::Live {
+                rx,
+                finished_at: None,
+                disconnected: false,
+            },
+        };
         (src, tx)
     }
 
     fn in_graph(src: &Source, unit: &str) -> bool {
-        Layout::compute(&src.tl, &LayoutOptions::default()).index.contains_key(unit)
+        Layout::compute(&src.tl, &LayoutOptions::default())
+            .index
+            .contains_key(unit)
     }
 
     #[test]
@@ -436,8 +547,18 @@ mod tests {
         let (mut src, tx) = live_source();
         let unit = "systemd-sysctl.service";
         tx.send(LiveMsg::Job(unit.into())).unwrap();
-        tx.send(LiveMsg::Event(Event { t: 100, unit: unit.into(), state: UnitState::Activating })).unwrap();
-        tx.send(LiveMsg::Event(Event { t: 200, unit: unit.into(), state: UnitState::Active })).unwrap();
+        tx.send(LiveMsg::Event(Event {
+            t: 100,
+            unit: unit.into(),
+            state: UnitState::Activating,
+        }))
+        .unwrap();
+        tx.send(LiveMsg::Event(Event {
+            t: 200,
+            unit: unit.into(),
+            state: UnitState::Active,
+        }))
+        .unwrap();
         src.poll();
         tx.send(LiveMsg::JobDone(unit.into())).unwrap();
         assert!(!src.poll(), "a finished job changes nothing structural");

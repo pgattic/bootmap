@@ -195,25 +195,49 @@ impl BootTimeline {
         self.events.clear();
         for u in self.units.values() {
             if let Some(t) = u.t_activating {
-                self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Activating });
+                self.events.push(Event {
+                    t,
+                    unit: u.name.clone(),
+                    state: UnitState::Activating,
+                });
             }
             match (u.t_active, u.state) {
                 (Some(t), state) => {
                     // Active once, stopped (or failed) since: show both.
                     if let Some(ti) = u.t_inactive.filter(|&ti| ti > t) {
-                        let state = if state == UnitState::Failed { state } else { UnitState::Inactive };
-                        self.events.push(Event { t: ti, unit: u.name.clone(), state });
+                        let state = if state == UnitState::Failed {
+                            state
+                        } else {
+                            UnitState::Inactive
+                        };
+                        self.events.push(Event {
+                            t: ti,
+                            unit: u.name.clone(),
+                            state,
+                        });
                     }
-                    self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Active })
+                    self.events.push(Event {
+                        t,
+                        unit: u.name.clone(),
+                        state: UnitState::Active,
+                    })
                 }
                 (None, UnitState::Failed) => {
                     if let Some(t) = u.t_inactive.or(u.t_activating) {
-                        self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Failed })
+                        self.events.push(Event {
+                            t,
+                            unit: u.name.clone(),
+                            state: UnitState::Failed,
+                        })
                     }
                 }
                 (None, _) => {
                     if let Some(t) = u.t_inactive {
-                        self.events.push(Event { t, unit: u.name.clone(), state: UnitState::Inactive })
+                        self.events.push(Event {
+                            t,
+                            unit: u.name.clone(),
+                            state: UnitState::Inactive,
+                        })
                     }
                 }
             }
@@ -242,8 +266,15 @@ impl BootTimeline {
         self.host = new.host;
         self.boot_id = new.boot_id;
         self.phases = new.phases;
-        for u in self.units.values_mut().filter(|u| !new.units.contains_key(&u.name)) {
-            if matches!(u.state, UnitState::Active | UnitState::Activating | UnitState::Deactivating) {
+        for u in self
+            .units
+            .values_mut()
+            .filter(|u| !new.units.contains_key(&u.name))
+        {
+            if matches!(
+                u.state,
+                UnitState::Active | UnitState::Activating | UnitState::Deactivating
+            ) {
                 u.state = UnitState::Inactive;
                 u.t_inactive.get_or_insert(switch_time);
             }
@@ -266,7 +297,11 @@ impl BootTimeline {
             .units
             .values()
             .filter(|u| last.get(u.name.as_str()).copied().unwrap_or_default() != u.state)
-            .map(|u| Event { t: switch_time, unit: u.name.clone(), state: u.state })
+            .map(|u| Event {
+                t: switch_time,
+                unit: u.name.clone(),
+                state: u.state,
+            })
             .collect();
         events.extend(missed);
         events.sort_by_key(|e| e.t);
@@ -284,14 +319,21 @@ impl BootTimeline {
             self.events.first().map(|e| e.t).unwrap_or(0)
         };
         let last = self.events.last().map(|e| e.t).unwrap_or(start);
-        let end = if self.phases.finish > 0 { self.phases.finish.max(last) } else { last };
+        let end = if self.phases.finish > 0 {
+            self.phases.finish.max(last)
+        } else {
+            last
+        };
         (start, end)
     }
 
     /// Unit states at time `t` (relative to nothing: absolute monotonic µs).
     pub fn states_at(&self, t: Usec) -> BTreeMap<&str, UnitState> {
-        let mut m: BTreeMap<&str, UnitState> =
-            self.units.keys().map(|k| (k.as_str(), UnitState::Inactive)).collect();
+        let mut m: BTreeMap<&str, UnitState> = self
+            .units
+            .keys()
+            .map(|k| (k.as_str(), UnitState::Inactive))
+            .collect();
         for e in self.events.iter().take_while(|e| e.t <= t) {
             m.insert(e.unit.as_str(), e.state);
         }
@@ -321,7 +363,10 @@ impl BootTimeline {
                 return false;
             }
         }
-        let u = self.units.entry(ev.unit.clone()).or_insert_with(|| Unit::new(ev.unit.clone()));
+        let u = self
+            .units
+            .entry(ev.unit.clone())
+            .or_insert_with(|| Unit::new(ev.unit.clone()));
         u.state = ev.state;
         match ev.state {
             UnitState::Activating if u.t_activating.is_none() => u.t_activating = Some(ev.t),
@@ -362,17 +407,37 @@ mod tests {
     fn merge_snapshot_keeps_initrd_units() {
         let mut old = BootTimeline::default();
         old.phases.in_initrd = true;
-        let mut a = unit("initrd-only.service", UnitState::Active, Some(100), Some(200));
+        let mut a = unit(
+            "initrd-only.service",
+            UnitState::Active,
+            Some(100),
+            Some(200),
+        );
         a.job = true;
-        a.processes.push(Process { pid: 1, comm: "x".into() });
+        a.processes.push(Process {
+            pid: 1,
+            comm: "x".into(),
+        });
         old.units.insert(a.name.clone(), a);
-        old.units.insert("both.service".into(), unit("both.service", UnitState::Activating, Some(150), None));
+        old.units.insert(
+            "both.service".into(),
+            unit("both.service", UnitState::Activating, Some(150), None),
+        );
         old.synthesize_events();
 
-        let mut new = BootTimeline { host: "h".into(), ..Default::default() };
+        let mut new = BootTimeline {
+            host: "h".into(),
+            ..Default::default()
+        };
         new.phases.userspace = 900;
-        new.units.insert("both.service".into(), unit("both.service", UnitState::Active, Some(150), Some(300)));
-        new.units.insert("new.service".into(), unit("new.service", UnitState::Active, Some(50), Some(60)));
+        new.units.insert(
+            "both.service".into(),
+            unit("both.service", UnitState::Active, Some(150), Some(300)),
+        );
+        new.units.insert(
+            "new.service".into(),
+            unit("new.service", UnitState::Active, Some(50), Some(60)),
+        );
         new.synthesize_events();
 
         old.merge_snapshot(new, 1000);
@@ -386,15 +451,25 @@ mod tests {
         assert_eq!(old.units["both.service"].t_active, Some(300));
         assert!(old.units.contains_key("new.service"));
         assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
-        assert!(old.events.iter().any(|e| e.unit == "initrd-only.service" && e.t == 1000));
+        assert!(old
+            .events
+            .iter()
+            .any(|e| e.unit == "initrd-only.service" && e.t == 1000));
     }
 
     #[test]
     fn apply_drops_stale_and_repeated_events() {
         use UnitState::*;
-        let ev = |t, state| Event { t, unit: "a.target".into(), state };
+        let ev = |t, state| Event {
+            t,
+            unit: "a.target".into(),
+            state,
+        };
         let mut tl = BootTimeline::default();
-        tl.units.insert("a.target".into(), unit("a.target", Active, Some(100), Some(100)));
+        tl.units.insert(
+            "a.target".into(),
+            unit("a.target", Active, Some(100), Some(100)),
+        );
         tl.synthesize_events();
         // Queued while the snapshot was taken: already covered by it.
         assert!(!tl.apply(ev(100, Activating)));
@@ -409,15 +484,30 @@ mod tests {
         assert!(tl.apply(ev(400, Active)));
         assert_eq!(
             history(&tl, "a.target"),
-            [(100, Activating), (100, Active), (300, Deactivating), (300, Inactive), (400, Activating), (400, Active)]
+            [
+                (100, Activating),
+                (100, Active),
+                (300, Deactivating),
+                (300, Inactive),
+                (400, Activating),
+                (400, Active)
+            ]
         );
         // An older event for another unit is slotted in, not appended.
-        assert!(tl.apply(Event { t: 200, unit: "b.service".into(), state: Activating }));
+        assert!(tl.apply(Event {
+            t: 200,
+            unit: "b.service".into(),
+            state: Activating
+        }));
         assert!(tl.events.windows(2).all(|w| w[0].t <= w[1].t));
     }
 
     fn history(tl: &BootTimeline, unit: &str) -> Vec<(Usec, UnitState)> {
-        tl.events.iter().filter(|e| e.unit == unit).map(|e| (e.t, e.state)).collect()
+        tl.events
+            .iter()
+            .filter(|e| e.unit == unit)
+            .map(|e| (e.t, e.state))
+            .collect()
     }
 
     #[test]
@@ -425,15 +515,28 @@ mod tests {
         use UnitState::*;
         let mut old = BootTimeline::default();
         // Ran in the initrd, was stopped there, and the real system starts it again.
-        old.units.insert("restart.service".into(), unit("restart.service", Active, Some(100), Some(200)));
+        old.units.insert(
+            "restart.service".into(),
+            unit("restart.service", Active, Some(100), Some(200)),
+        );
         // Still running when we lost the connection; stopped before we were back.
-        old.units.insert("missed.service".into(), unit("missed.service", Active, Some(120), Some(220)));
+        old.units.insert(
+            "missed.service".into(),
+            unit("missed.service", Active, Some(120), Some(220)),
+        );
         old.synthesize_events();
-        old.apply(Event { t: 400, unit: "restart.service".into(), state: Inactive });
+        old.apply(Event {
+            t: 400,
+            unit: "restart.service".into(),
+            state: Inactive,
+        });
 
         let mut new = BootTimeline::default();
         new.phases.userspace = 900;
-        new.units.insert("restart.service".into(), unit("restart.service", Active, Some(950), Some(960)));
+        new.units.insert(
+            "restart.service".into(),
+            unit("restart.service", Active, Some(950), Some(960)),
+        );
         let mut missed = unit("missed.service", Inactive, Some(120), Some(220));
         missed.t_inactive = Some(850);
         new.units.insert("missed.service".into(), missed);
@@ -441,9 +544,18 @@ mod tests {
         old.merge_snapshot(new, 1000);
         assert_eq!(
             history(&old, "restart.service"),
-            [(100, Activating), (200, Active), (400, Inactive), (950, Activating), (960, Active)]
+            [
+                (100, Activating),
+                (200, Active),
+                (400, Inactive),
+                (950, Activating),
+                (960, Active)
+            ]
         );
-        assert_eq!(history(&old, "missed.service"), [(120, Activating), (220, Active), (1000, Inactive)]);
+        assert_eq!(
+            history(&old, "missed.service"),
+            [(120, Activating), (220, Active), (1000, Inactive)]
+        );
         assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
     }
 }

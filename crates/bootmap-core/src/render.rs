@@ -7,7 +7,8 @@ use fontdue::{Font, FontSettings};
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 use tiny_skia::{
-    Color, FillRule, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
+    Color, FillRule, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
+    Transform,
 };
 
 static FONT_BYTES: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
@@ -49,11 +50,17 @@ pub struct Camera {
 
 impl Camera {
     pub fn to_px(&self, w: f32, h: f32, x: f32, y: f32) -> (f32, f32) {
-        (w / 2.0 + (x - self.cx) * self.scale, h / 2.0 + (y - self.cy) * self.scale)
+        (
+            w / 2.0 + (x - self.cx) * self.scale,
+            h / 2.0 + (y - self.cy) * self.scale,
+        )
     }
 
     pub fn to_world(&self, w: f32, h: f32, px: f32, py: f32) -> (f32, f32) {
-        (self.cx + (px - w / 2.0) / self.scale, self.cy + (py - h / 2.0) / self.scale)
+        (
+            self.cx + (px - w / 2.0) / self.scale,
+            self.cy + (py - h / 2.0) / self.scale,
+        )
     }
 
     /// Fit `points` (world) into a `w`×`h` screen with `margin` px around them.
@@ -66,12 +73,20 @@ impl Camera {
             y1 = y1.max(y);
         }
         if x0 > x1 {
-            return Self { cx: 0.0, cy: 0.0, scale: 50.0 };
+            return Self {
+                cx: 0.0,
+                cy: 0.0,
+                scale: 50.0,
+            };
         }
         let bw = (x1 - x0).max(1.0);
         let bh = (y1 - y0).max(1.0);
         let scale = ((w - 2.0 * margin).max(50.0) / bw).min((h - 2.0 * margin).max(50.0) / bh);
-        Self { cx: (x0 + x1) / 2.0, cy: (y0 + y1) / 2.0, scale }
+        Self {
+            cx: (x0 + x1) / 2.0,
+            cy: (y0 + y1) / 2.0,
+            scale,
+        }
     }
 
     /// Smoothly move toward `o` (scale interpolated geometrically).
@@ -156,7 +171,12 @@ impl Sizes {
     /// the margin follows the screen).
     fn at(s: f32, text: f32) -> Self {
         let small = 13.5 * s * text;
-        Self { big: 22.0 * s * text, small, line: small * 1.45, margin: 18.0 * s }
+        Self {
+            big: 22.0 * s * text,
+            small,
+            line: small * 1.45,
+            margin: 18.0 * s,
+        }
     }
 }
 
@@ -182,7 +202,12 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { extra_edges: true, labels: true, hud: true, shutdown_from: None }
+        Self {
+            extra_edges: true,
+            labels: true,
+            hud: true,
+            shutdown_from: None,
+        }
     }
 }
 
@@ -213,9 +238,16 @@ pub struct Prompt {
 
 /// Unit visual states at time `t`. With `shutdown_from`, units that stop at
 /// or after that time fade back to `Ghost` instead of showing as `Exited`.
-pub fn visuals_at(tl: &BootTimeline, t: Usec, shutdown_from: Option<Usec>) -> HashMap<&str, Visual> {
-    let mut m: HashMap<&str, Visual> =
-        tl.units.keys().map(|k| (k.as_str(), Visual::Ghost)).collect();
+pub fn visuals_at(
+    tl: &BootTimeline,
+    t: Usec,
+    shutdown_from: Option<Usec>,
+) -> HashMap<&str, Visual> {
+    let mut m: HashMap<&str, Visual> = tl
+        .units
+        .keys()
+        .map(|k| (k.as_str(), Visual::Ghost))
+        .collect();
     for e in tl.events.iter().take_while(|e| e.t <= t) {
         let started = !matches!(m.get(e.unit.as_str()), Some(Visual::Ghost) | None);
         let v = match e.state {
@@ -269,7 +301,11 @@ fn label_candidates(
     }
     let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
     let slow: HashSet<usize> = if finished {
-        slowest(lay, tl).iter().take(8).filter_map(|(u, _)| lay.index.get(u).copied()).collect()
+        slowest(lay, tl)
+            .iter()
+            .take(8)
+            .filter_map(|(u, _)| lay.index.get(u).copied())
+            .collect()
     } else {
         HashSet::new()
     };
@@ -289,9 +325,18 @@ fn label_candidates(
             Some(_) => continue,
             None if v == Visual::Failed => (5_000, 1.0),
             None if matches!(v, Visual::Activating | Visual::Stopping) => (4_000, 1.0),
-            None if matches!(v, Visual::Active | Visual::Exited) && since.is_some_and(|d| d < LABEL_FADE) => {
+            None if matches!(v, Visual::Active | Visual::Exited)
+                && since.is_some_and(|d| d < LABEL_FADE) =>
+            {
                 let d = since.unwrap_or(0.0);
-                (3_000, if d <= LABEL_HOLD { 1.0 } else { 1.0 - (d - LABEL_HOLD) / (LABEL_FADE - LABEL_HOLD) })
+                (
+                    3_000,
+                    if d <= LABEL_HOLD {
+                        1.0
+                    } else {
+                        1.0 - (d - LABEL_HOLD) / (LABEL_FADE - LABEL_HOLD)
+                    },
+                )
             }
             // Once finished, the slowest units explain the boot: they win over targets.
             None if slow.contains(&i) => (2_500, 1.0),
@@ -312,10 +357,19 @@ impl Renderer {
             .font
             .as_deref()
             .and_then(|b| Font::from_bytes(b, FontSettings::default()).ok())
-            .unwrap_or_else(|| Font::from_bytes(FONT_BYTES, FontSettings::default()).expect("bundled font parses"));
+            .unwrap_or_else(|| {
+                Font::from_bytes(FONT_BYTES, FontSettings::default()).expect("bundled font parses")
+            });
         opts.labels &= look.show.labels;
         opts.extra_edges &= look.show.extra_edges;
-        Self { font, look, text_cache: HashMap::new(), opts, prompt: None, ui_scale: 1.0 }
+        Self {
+            font,
+            look,
+            text_cache: HashMap::new(),
+            opts,
+            prompt: None,
+            ui_scale: 1.0,
+        }
     }
 
     /// The colour behind everything, for filling areas the picture does not cover.
@@ -345,15 +399,29 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_text_faded(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, px: f32, c: Rgb8, opacity: f32) -> f32 {
-        let Some(t) = self.text(s, px, c) else { return 0.0 };
+    fn draw_text_faded(
+        &mut self,
+        pm: &mut Pixmap,
+        s: &str,
+        x: f32,
+        y: f32,
+        px: f32,
+        c: Rgb8,
+        opacity: f32,
+    ) -> f32 {
+        let Some(t) = self.text(s, px, c) else {
+            return 0.0;
+        };
         let w = t.width() as f32;
         let t = t.clone();
         pm.draw_pixmap(
             0,
             0,
             t.as_ref(),
-            &PixmapPaint { opacity, ..Default::default() },
+            &PixmapPaint {
+                opacity,
+                ..Default::default()
+            },
             Transform::from_translate(x.round(), (y - px).round()),
             None,
         );
@@ -387,7 +455,11 @@ impl Renderer {
         };
         // Hover focus: the hovered node and its neighbors stay bright.
         let focus: Option<HashSet<usize>> = f.hover.map(|h| {
-            let mut s: HashSet<usize> = lay.adj.get(h).map(|a| a.iter().copied().collect()).unwrap_or_default();
+            let mut s: HashSet<usize> = lay
+                .adj
+                .get(h)
+                .map(|a| a.iter().copied().collect())
+                .unwrap_or_default();
             s.insert(h);
             s
         });
@@ -414,19 +486,41 @@ impl Renderer {
                 if node_vis(a) == Visual::Ghost || node_vis(b) == Visual::Ghost {
                     continue;
                 }
-                let pb = if edge_focus(a, b) > 1.0 { &mut lit } else { &mut faint };
+                let pb = if edge_focus(a, b) > 1.0 {
+                    &mut lit
+                } else {
+                    &mut faint
+                };
                 let ((x0, y0), (x1, y1)) = (px(a), px(b));
                 pb.move_to(x0, y0);
                 pb.line_to(x1, y1);
             }
-            let stroke = Stroke { width: 0.6 * s, ..Default::default() };
+            let stroke = Stroke {
+                width: 0.6 * s,
+                ..Default::default()
+            };
             let base = if focus.is_some() { 0.03 } else { 0.10 };
             if let Some(p) = faint.finish() {
-                pm.stroke_path(&p, &paint(pal.muted, base), &stroke, Transform::identity(), None);
+                pm.stroke_path(
+                    &p,
+                    &paint(pal.muted, base),
+                    &stroke,
+                    Transform::identity(),
+                    None,
+                );
             }
             if let Some(p) = lit.finish() {
-                let stroke = Stroke { width: 1.0 * s, ..Default::default() };
-                pm.stroke_path(&p, &paint(pal.muted, 0.55), &stroke, Transform::identity(), None);
+                let stroke = Stroke {
+                    width: 1.0 * s,
+                    ..Default::default()
+                };
+                pm.stroke_path(
+                    &p,
+                    &paint(pal.muted, 0.55),
+                    &stroke,
+                    Transform::identity(),
+                    None,
+                );
             }
         }
 
@@ -437,7 +531,13 @@ impl Renderer {
         for (i, n) in lay.nodes.iter().enumerate().skip(1) {
             let p = n.parent.unwrap_or(ROOT);
             let fo = edge_focus(p, i);
-            let fkey = if fo > 1.0 { 2 } else if fo < 1.0 { 0 } else { 1 };
+            let fkey = if fo > 1.0 {
+                2
+            } else if fo < 1.0 {
+                0
+            } else {
+                1
+            };
             let pb = groups.entry((node_vis(i) as u8, fkey)).or_default();
             let ((x0, y0), (x1, y1)) = (px(p), px(i));
             pb.move_to(x0, y0);
@@ -446,7 +546,9 @@ impl Renderer {
         for ((key, fkey), pb) in groups {
             let (c, a, wdt) = match key {
                 k if k == Visual::Ghost as u8 => (pal.pending, 0.35, 0.7),
-                k if k == Visual::Activating as u8 || k == Visual::Stopping as u8 => (pal.starting, 0.8, 1.4),
+                k if k == Visual::Activating as u8 || k == Visual::Stopping as u8 => {
+                    (pal.starting, 0.8, 1.4)
+                }
                 k if k == Visual::Active as u8 => (pal.active, 0.45, 1.1),
                 k if k == Visual::Exited as u8 => (pal.exited, 0.4, 1.0),
                 _ => (pal.failed, 0.8, 1.4),
@@ -457,20 +559,31 @@ impl Renderer {
                 _ => (a, wdt),
             };
             if let Some(p) = pb.finish() {
-                let stroke = Stroke { width: wdt * s, ..Default::default() };
+                let stroke = Stroke {
+                    width: wdt * s,
+                    ..Default::default()
+                };
                 pm.stroke_path(&p, &paint(c, a), &stroke, Transform::identity(), None);
             }
         }
 
         // Processes: tiny satellites on running units.
         for (pi, p) in lay.procs.iter().enumerate() {
-            if !matches!(node_vis(p.unit), Visual::Active | Visual::Activating | Visual::Stopping) {
+            if !matches!(
+                node_vis(p.unit),
+                Visual::Active | Visual::Activating | Visual::Stopping
+            ) {
                 continue;
             }
             let (x0, y0) = px(p.unit);
             // Orbit the unit, fanning away from the center.
-            let siblings: Vec<usize> =
-                lay.procs.iter().enumerate().filter(|(_, q)| q.unit == p.unit).map(|(j, _)| j).collect();
+            let siblings: Vec<usize> = lay
+                .procs
+                .iter()
+                .enumerate()
+                .filter(|(_, q)| q.unit == p.unit)
+                .map(|(j, _)| j)
+                .collect();
             let k = siblings.len() as f32;
             let j = siblings.iter().position(|&j| j == pi).unwrap_or(0) as f32;
             let out = (y0 - oy).atan2(x0 - ox);
@@ -482,11 +595,26 @@ impl Renderer {
             pb.move_to(x0, y0);
             pb.line_to(x, y);
             if let Some(l) = pb.finish() {
-                let stroke = Stroke { width: 0.6 * s, ..Default::default() };
-                pm.stroke_path(&l, &paint(pal.process, 0.35 * a), &stroke, Transform::identity(), None);
+                let stroke = Stroke {
+                    width: 0.6 * s,
+                    ..Default::default()
+                };
+                pm.stroke_path(
+                    &l,
+                    &paint(pal.process, 0.35 * a),
+                    &stroke,
+                    Transform::identity(),
+                    None,
+                );
             }
             if let Some(c) = PathBuilder::from_circle(x, y, 1.8 * s) {
-                pm.fill_path(&c, &paint(pal.process, 0.85 * a), FillRule::Winding, Transform::identity(), None);
+                pm.fill_path(
+                    &c,
+                    &paint(pal.process, 0.85 * a),
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
             }
         }
 
@@ -498,10 +626,14 @@ impl Renderer {
             let (x, y) = px(i);
             let is_target = n.kind == Some(UnitKind::Target);
             // Size by connectedness; targets a little larger.
-            let base = (2.2 + 0.85 * (lay.degree(i) as f32).sqrt()) * if is_target { 1.25 } else { 1.0 } * s;
+            let base = (2.2 + 0.85 * (lay.degree(i) as f32).sqrt())
+                * if is_target { 1.25 } else { 1.0 }
+                * s;
             let (c, a, rad) = match v {
                 Visual::Ghost => (pal.pending, 0.8, base * 0.6),
-                Visual::Activating | Visual::Stopping => (pal.starting, 1.0, base * (1.0 + 0.35 * pulse)),
+                Visual::Activating | Visual::Stopping => {
+                    (pal.starting, 1.0, base * (1.0 + 0.35 * pulse))
+                }
                 Visual::Active if is_target => (pal.target, 1.0, base),
                 Visual::Active => (pal.active, 1.0, base),
                 Visual::Exited => (pal.exited, 0.9, base * 0.85),
@@ -511,21 +643,45 @@ impl Renderer {
             let a = a * dim(i);
             if matches!(v, Visual::Activating | Visual::Stopping) {
                 if let Some(halo) = PathBuilder::from_circle(x, y, rad * 2.6) {
-                    pm.fill_path(&halo, &paint(c, 0.18 * (0.4 + pulse) * dim(i)), FillRule::Winding, Transform::identity(), None);
+                    pm.fill_path(
+                        &halo,
+                        &paint(c, 0.18 * (0.4 + pulse) * dim(i)),
+                        FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
             if f.hover == Some(i) {
                 if let Some(ring) = PathBuilder::from_circle(x, y, rad + 4.0 * s) {
-                    let stroke = Stroke { width: 1.5 * s, ..Default::default() };
-                    pm.stroke_path(&ring, &paint(pal.text, 0.9), &stroke, Transform::identity(), None);
+                    let stroke = Stroke {
+                        width: 1.5 * s,
+                        ..Default::default()
+                    };
+                    pm.stroke_path(
+                        &ring,
+                        &paint(pal.text, 0.9),
+                        &stroke,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
             if let Some(dot) = PathBuilder::from_circle(x, y, rad) {
                 if v == Visual::Exited {
-                    let stroke = Stroke { width: 1.2 * s, ..Default::default() };
+                    let stroke = Stroke {
+                        width: 1.2 * s,
+                        ..Default::default()
+                    };
                     pm.stroke_path(&dot, &paint(c, a), &stroke, Transform::identity(), None);
                 } else {
-                    pm.fill_path(&dot, &paint(c, a), FillRule::Winding, Transform::identity(), None);
+                    pm.fill_path(
+                        &dot,
+                        &paint(c, a),
+                        FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }
@@ -533,23 +689,45 @@ impl Renderer {
         // Center node.
         let core_r = (cam.scale * 0.22).clamp(6.0 * s, 26.0 * s);
         if let Some(c) = PathBuilder::from_circle(ox, oy, core_r * 1.8) {
-            pm.fill_path(&c, &paint(pal.target, 0.10), FillRule::Winding, Transform::identity(), None);
+            pm.fill_path(
+                &c,
+                &paint(pal.target, 0.10),
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
         match &self.look.center_image {
             Some(img) => {
                 // Scaled to fit a square, aspect kept, centered on the node.
                 let k = 2.8 * core_r / img.width().max(img.height()) as f32;
-                let (dx, dy) = (ox - img.width() as f32 * k / 2.0, oy - img.height() as f32 * k / 2.0);
+                let (dx, dy) = (
+                    ox - img.width() as f32 * k / 2.0,
+                    oy - img.height() as f32 * k / 2.0,
+                );
                 let ipaint = PixmapPaint {
                     opacity: 0.95 * dim(ROOT),
                     quality: FilterQuality::Bilinear,
                     ..Default::default()
                 };
-                pm.draw_pixmap(0, 0, img.as_ref(), &ipaint, Transform::from_scale(k, k).post_translate(dx, dy), None);
+                pm.draw_pixmap(
+                    0,
+                    0,
+                    img.as_ref(),
+                    &ipaint,
+                    Transform::from_scale(k, k).post_translate(dx, dy),
+                    None,
+                );
             }
             None => {
                 if let Some(c) = PathBuilder::from_circle(ox, oy, core_r) {
-                    pm.fill_path(&c, &paint(pal.text, 0.95 * dim(ROOT)), FillRule::Winding, Transform::identity(), None);
+                    pm.fill_path(
+                        &c,
+                        &paint(pal.text, 0.95 * dim(ROOT)),
+                        FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }
@@ -584,12 +762,21 @@ impl Renderer {
         if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
             pm.fill_rect(r, &paint(pal.background, 0.6), Transform::identity(), None);
         }
-        let text_w = |me: &mut Self, s: &str, size: f32| me.text(s, size, pal.text).map(|p| p.width() as f32).unwrap_or(0.0);
+        let text_w = |me: &mut Self, s: &str, size: f32| {
+            me.text(s, size, pal.text)
+                .map(|p| p.width() as f32)
+                .unwrap_or(0.0)
+        };
         let hint = "Enter to confirm  ·  Esc to start over";
         let small = px * 0.8;
         let inner = text_w(self, &prompt.message, px)
             .max(text_w(self, hint, small))
-            .max(prompt.note.as_deref().map_or(0.0, |n| text_w(self, n, small)))
+            .max(
+                prompt
+                    .note
+                    .as_deref()
+                    .map_or(0.0, |n| text_w(self, n, small)),
+            )
             .max(px * 22.0)
             .min(w - 4.0 * pad);
         let rows = 3.6 + if prompt.note.is_some() { 1.0 } else { 0.0 };
@@ -613,12 +800,25 @@ impl Renderer {
         }
         let mut shown: &str = &prompt.entered;
         while text_w(self, shown, px) > inner - px * 1.5 {
-            let Some((i, _)) = shown.char_indices().nth(1) else { break };
+            let Some((i, _)) = shown.char_indices().nth(1) else {
+                break;
+            };
             shown = &shown[i..];
         }
-        let end = x + px * 0.5 + self.draw_text(pm, shown, x + px * 0.5, y + field_h * 0.5 + px * 0.38, px, pal.text);
+        let end = x
+            + px * 0.5
+            + self.draw_text(
+                pm,
+                shown,
+                x + px * 0.5,
+                y + field_h * 0.5 + px * 0.38,
+                px,
+                pal.text,
+            );
         if (wall * 2.0) as i64 % 2 == 0 {
-            if let Some(r) = Rect::from_xywh(end + 2.0 * s, y + field_h * 0.2, 2.0 * s, field_h * 0.6) {
+            if let Some(r) =
+                Rect::from_xywh(end + 2.0 * s, y + field_h * 0.2, 2.0 * s, field_h * 0.6)
+            {
                 pm.fill_rect(r, &paint(pal.text, 0.9), Transform::identity(), None);
             }
         }
@@ -654,7 +854,10 @@ impl Renderer {
             let is_target = n.kind == Some(UnitKind::Target);
             let size = if f.hover == Some(i) { px * 1.15 } else { px };
             let name = node_label(n);
-            let tw = self.text(&name, size, pal.text).map(|p| p.width() as f32).unwrap_or(0.0);
+            let tw = self
+                .text(&name, size, pal.text)
+                .map(|p| p.width() as f32)
+                .unwrap_or(0.0);
             let (x, y) = f.cam.to_px(w, h, f.pos[i].0, f.pos[i].1);
             let lx = x + radii[i] + 4.0 * s;
             let pad = 2.0 * s;
@@ -662,12 +865,18 @@ impl Renderer {
             if rect.2 < 0.0 || rect.0 > w || rect.3 < 0.0 || rect.1 > h {
                 continue;
             }
-            let hit = placed.iter().any(|r| rect.0 < r.2 && rect.2 > r.0 && rect.1 < r.3 && rect.3 > r.1);
+            let hit = placed
+                .iter()
+                .any(|r| rect.0 < r.2 && rect.2 > r.0 && rect.1 < r.3 && rect.3 > r.1);
             if hit && f.hover != Some(i) {
                 continue;
             }
             placed.push(rect);
-            let c = if f.hover == Some(i) { pal.text } else { label_color(&pal, v, is_target) };
+            let c = if f.hover == Some(i) {
+                pal.text
+            } else {
+                label_color(&pal, v, is_target)
+            };
             self.draw_text_faded(pm, &name, lx, y + size * 0.35, size, c, alpha);
         }
     }
@@ -706,12 +915,25 @@ impl Renderer {
             const SHOWN: usize = 8;
             for u in node.units.iter().take(SHOWN) {
                 let uv = *vis.get(u.as_str()).unwrap_or(&Visual::Ghost);
-                let instance = u.split_once('@').map_or(u.as_str(), |(_, rest)| rest.rsplit_once('.').map_or(rest, |(i, _)| i));
-                let took = tl.units.get(u).and_then(|u| u.duration()).map(|d| format!(" · {:.3}s", d as f32 / 1e6)).unwrap_or_default();
-                lines.push((format!("  {instance}  {}{took}", state_word(uv)), label_color(&pal, uv, false)));
+                let instance = u.split_once('@').map_or(u.as_str(), |(_, rest)| {
+                    rest.rsplit_once('.').map_or(rest, |(i, _)| i)
+                });
+                let took = tl
+                    .units
+                    .get(u)
+                    .and_then(|u| u.duration())
+                    .map(|d| format!(" · {:.3}s", d as f32 / 1e6))
+                    .unwrap_or_default();
+                lines.push((
+                    format!("  {instance}  {}{took}", state_word(uv)),
+                    label_color(&pal, uv, false),
+                ));
             }
             if node.units.len() > SHOWN {
-                lines.push((format!("  and {} more", node.units.len() - SHOWN), pal.muted));
+                lines.push((
+                    format!("  and {} more", node.units.len() - SHOWN),
+                    pal.muted,
+                ));
             }
         } else {
             lines.push((node.name.clone(), pal.text));
@@ -726,15 +948,24 @@ impl Renderer {
                 st += &format!(" · started +{:.3}s", a.saturating_sub(start) as f32 / 1e6);
             }
             match (u.duration(), v) {
-                (Some(d), Visual::Active | Visual::Exited | Visual::Failed) => st += &format!(" · took {:.3}s", d as f32 / 1e6),
+                (Some(d), Visual::Active | Visual::Exited | Visual::Failed) => {
+                    st += &format!(" · took {:.3}s", d as f32 / 1e6)
+                }
                 (_, Visual::Activating) => {
-                    st += &format!(" · {:.2}s so far", t.saturating_sub(u.t_activating.unwrap_or(t)) as f32 / 1e6)
+                    st += &format!(
+                        " · {:.2}s so far",
+                        t.saturating_sub(u.t_activating.unwrap_or(t)) as f32 / 1e6
+                    )
                 }
                 _ => {}
             }
             lines.push((st, label_color(&pal, v, false)));
             if !u.processes.is_empty() {
-                let procs: Vec<String> = u.processes.iter().map(|p| format!("{} ({})", p.comm, p.pid)).collect();
+                let procs: Vec<String> = u
+                    .processes
+                    .iter()
+                    .map(|p| format!("{} ({})", p.comm, p.pid))
+                    .collect();
                 lines.push((procs.join(", "), pal.process));
             }
         }
@@ -744,7 +975,11 @@ impl Renderer {
         lines.push((format!("{} connections", lay.degree(i)), pal.muted));
         let tw = lines
             .iter()
-            .map(|(txt, c)| self.text(txt, small, *c).map(|p| p.width() as f32).unwrap_or(0.0))
+            .map(|(txt, c)| {
+                self.text(txt, small, *c)
+                    .map(|p| p.width() as f32)
+                    .unwrap_or(0.0)
+            })
             .fold(0.0, f32::max);
         let (pad, edge) = (14.0 * s, 16.0 * s);
         let bw = (tw + 2.0 * pad).min(w - 2.0 * edge);
@@ -789,13 +1024,34 @@ impl Renderer {
     }
 
     /// One "dot  count  label" row; returns the y of the next row.
-    fn hud_count(&mut self, pm: &mut Pixmap, z: &Sizes, y: f32, n: usize, label: &str, c: Rgb8) -> f32 {
+    fn hud_count(
+        &mut self,
+        pm: &mut Pixmap,
+        z: &Sizes,
+        y: f32,
+        n: usize,
+        label: &str,
+        c: Rgb8,
+    ) -> f32 {
         let s = self.ui_scale;
         let text = self.look.palette.text;
         if let Some(d) = PathBuilder::from_circle(z.margin + 4.0 * s, y - z.small * 0.35, 4.0 * s) {
-            pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+            pm.fill_path(
+                &d,
+                &paint(c, 1.0),
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
-        self.draw_text(pm, &format!("{n:>4}  {label}"), z.margin + 14.0 * s, y, z.small, text);
+        self.draw_text(
+            pm,
+            &format!("{n:>4}  {label}"),
+            z.margin + 14.0 * s,
+            y,
+            z.small,
+            text,
+        );
         y + z.line
     }
 
@@ -805,18 +1061,35 @@ impl Renderer {
         let muted = self.look.palette.muted;
         let mut y = z.margin + z.small;
         for &(label, c) in entries {
-            let tw = self.text(label, z.small, muted).map(|p| p.width() as f32).unwrap_or(0.0);
+            let tw = self
+                .text(label, z.small, muted)
+                .map(|p| p.width() as f32)
+                .unwrap_or(0.0);
             let x = w - z.margin - tw;
             self.draw_text(pm, label, x, y, z.small, muted);
             if let Some(d) = PathBuilder::from_circle(x - 10.0 * s, y - z.small * 0.35, 3.5 * s) {
-                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+                pm.fill_path(
+                    &d,
+                    &paint(c, 1.0),
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
             }
             y += z.line;
         }
     }
 
     /// HUD for the shutdown view: what is still running and what is holding it up.
-    fn hud_shutdown(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, t: Usec, vis: &HashMap<&str, Visual>, from: Usec) {
+    fn hud_shutdown(
+        &mut self,
+        pm: &mut Pixmap,
+        lay: &Layout,
+        tl: &BootTimeline,
+        t: Usec,
+        vis: &HashMap<&str, Visual>,
+        from: Usec,
+    ) {
         let z = self.sizes();
         let pal = self.look.palette;
         let x = z.margin;
@@ -824,30 +1097,51 @@ impl Renderer {
         let floor = pm.height() as f32 - z.margin;
         let mut y = self.hud_title(pm, tl, &z);
         // Which shutdown is it? The target with a queued job tells us.
-        let queued = |name: &str| tl.units.get(name).is_some_and(|u| u.job || u.state == UnitState::Active);
-        let what = if queued("reboot.target") || queued("kexec.target") || queued("soft-reboot.target") {
-            "rebooting"
-        } else if queued("poweroff.target") {
-            "powering off"
-        } else if queued("halt.target") {
-            "halting"
-        } else {
-            "shutting down"
+        let queued = |name: &str| {
+            tl.units
+                .get(name)
+                .is_some_and(|u| u.job || u.state == UnitState::Active)
         };
+        let what =
+            if queued("reboot.target") || queued("kexec.target") || queued("soft-reboot.target") {
+                "rebooting"
+            } else if queued("poweroff.target") {
+                "powering off"
+            } else if queued("halt.target") {
+                "halting"
+            } else {
+                "shutting down"
+            };
         let status = format!("{what} +{:.1}s", t.saturating_sub(from) as f32 / 1e6);
         if show.status {
             self.draw_text(pm, &status, x, y, z.small * 1.15, pal.starting);
             y += z.line * 1.2;
         }
 
-        let units: Vec<&str> = lay.nodes.iter().flat_map(|n| n.units.iter().map(|u| u.as_str())).collect();
-        let count = |want: &[Visual]| units.iter().filter(|u| vis.get(*u).is_some_and(|v| want.contains(v))).count();
+        let units: Vec<&str> = lay
+            .nodes
+            .iter()
+            .flat_map(|n| n.units.iter().map(|u| u.as_str()))
+            .collect();
+        let count = |want: &[Visual]| {
+            units
+                .iter()
+                .filter(|u| vis.get(*u).is_some_and(|v| want.contains(v)))
+                .count()
+        };
         let running = count(&[Visual::Active, Visual::Activating]);
         let stopping = count(&[Visual::Stopping]);
         if show.status {
             y = self.hud_count(pm, &z, y, running, "running", pal.active);
             y = self.hud_count(pm, &z, y, stopping, "stopping", pal.starting);
-            y = self.hud_count(pm, &z, y, units.len() - running - stopping, "stopped", pal.pending);
+            y = self.hud_count(
+                pm,
+                &z,
+                y,
+                units.len() - running - stopping,
+                "stopped",
+                pal.pending,
+            );
         }
 
         // Units being stopped right now, longest-waiting first.
@@ -858,7 +1152,11 @@ impl Renderer {
             self.draw_text(pm, "stopping", x, y, z.small, pal.muted);
             y += z.line;
             let mut since: HashMap<&str, Usec> = HashMap::new();
-            for e in tl.events.iter().filter(|e| e.state == UnitState::Deactivating && e.t <= t) {
+            for e in tl
+                .events
+                .iter()
+                .filter(|e| e.state == UnitState::Deactivating && e.t <= t)
+            {
                 since.insert(e.unit.as_str(), e.t);
             }
             let mut ing: Vec<(&str, Usec)> = units
@@ -871,18 +1169,39 @@ impl Renderer {
                 if y > floor {
                     break;
                 }
-                let line = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
+                let line = format!(
+                    "{:>6.2}s  {}",
+                    t.saturating_sub(*a) as f32 / 1e6,
+                    short_name(name)
+                );
                 self.draw_text(pm, &line, x, y, z.small, pal.starting);
                 y += z.line;
             }
         }
 
         if show.legend {
-            self.hud_legend(pm, &z, &[("target", pal.target), ("running", pal.active), ("stopping", pal.starting), ("stopped", pal.pending), ("process", pal.process)]);
+            self.hud_legend(
+                pm,
+                &z,
+                &[
+                    ("target", pal.target),
+                    ("running", pal.active),
+                    ("stopping", pal.starting),
+                    ("stopped", pal.pending),
+                    ("process", pal.process),
+                ],
+            );
         }
     }
 
-    fn hud(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, t: Usec, vis: &HashMap<&str, Visual>) {
+    fn hud(
+        &mut self,
+        pm: &mut Pixmap,
+        lay: &Layout,
+        tl: &BootTimeline,
+        t: Usec,
+        vis: &HashMap<&str, Visual>,
+    ) {
         let (w, h) = (pm.width() as f32, pm.height() as f32);
         let s = self.ui_scale;
         let z = self.sizes();
@@ -894,31 +1213,66 @@ impl Renderer {
         let (start, end) = tl.span();
         let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
         let ph = &tl.phases;
-        let initrd_origin = if ph.initrd > 0 { ph.initrd } else { ph.userspace };
+        let initrd_origin = if ph.initrd > 0 {
+            ph.initrd
+        } else {
+            ph.userspace
+        };
         // Live in the initrd, or replaying the part of a recording before the switch.
         let status = if ph.in_initrd || (ph.initrd > 0 && t < ph.userspace) {
-            format!("initrd +{:.3}s", t.saturating_sub(initrd_origin) as f32 / 1e6)
+            format!(
+                "initrd +{:.3}s",
+                t.saturating_sub(initrd_origin) as f32 / 1e6
+            )
         } else if finished {
-            format!("userspace +{:.3}s · boot finished", ph.finish.saturating_sub(ph.userspace) as f32 / 1e6)
+            format!(
+                "userspace +{:.3}s · boot finished",
+                ph.finish.saturating_sub(ph.userspace) as f32 / 1e6
+            )
         } else {
-            format!("userspace +{:.3}s", t.saturating_sub(ph.userspace) as f32 / 1e6)
+            format!(
+                "userspace +{:.3}s",
+                t.saturating_sub(ph.userspace) as f32 / 1e6
+            )
         };
         if show.status {
-            self.draw_text(pm, &status, x, y, z.small * 1.15, if finished { pal.active } else { pal.starting });
+            self.draw_text(
+                pm,
+                &status,
+                x,
+                y,
+                z.small * 1.15,
+                if finished { pal.active } else { pal.starting },
+            );
             y += z.line * 1.2;
         }
 
         // Counts are of units: a group of five instances counts five.
-        let units: Vec<&str> = lay.nodes.iter().flat_map(|n| n.units.iter().map(|u| u.as_str())).collect();
+        let units: Vec<&str> = lay
+            .nodes
+            .iter()
+            .flat_map(|n| n.units.iter().map(|u| u.as_str()))
+            .collect();
         let count = |want: Visual| units.iter().filter(|u| vis.get(*u) == Some(&want)).count();
-        let (n_act, n_ing, n_ex, n_fail) =
-            (count(Visual::Active), count(Visual::Activating), count(Visual::Exited), count(Visual::Failed));
+        let (n_act, n_ing, n_ex, n_fail) = (
+            count(Visual::Active),
+            count(Visual::Activating),
+            count(Visual::Exited),
+            count(Visual::Failed),
+        );
         if show.status {
             y = self.hud_count(pm, &z, y, n_act, "active", pal.active);
             y = self.hud_count(pm, &z, y, n_ing, "activating", pal.starting);
             y = self.hud_count(pm, &z, y, n_ex, "exited", pal.exited);
             y = self.hud_count(pm, &z, y, n_fail, "failed", pal.failed);
-            y = self.hud_count(pm, &z, y, units.len() - n_act - n_ing - n_ex - n_fail, "pending", pal.pending);
+            y = self.hud_count(
+                pm,
+                &z,
+                y,
+                units.len() - n_act - n_ing - n_ex - n_fail,
+                "pending",
+                pal.pending,
+            );
         }
 
         // In-flight jobs, or the slowest units once finished.
@@ -940,7 +1294,11 @@ impl Renderer {
                 if y > floor {
                     break;
                 }
-                let line = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
+                let line = format!(
+                    "{:>6.2}s  {}",
+                    t.saturating_sub(*a) as f32 / 1e6,
+                    short_name(name)
+                );
                 self.draw_text(pm, &line, x, y, z.small, pal.starting);
                 y += z.line;
             }
@@ -958,48 +1316,69 @@ impl Renderer {
         }
 
         if show.phases {
-        // Phase bar along the bottom.
-        let mut parts = vec![];
-        if ph.firmware > ph.loader && ph.loader > 0 {
-            parts.push(format!("firmware {:.1}s", (ph.firmware - ph.loader) as f32 / 1e6));
-        }
-        if ph.loader > 0 {
-            parts.push(format!("loader {:.1}s", ph.loader as f32 / 1e6));
-        }
-        if ph.in_initrd {
-            // The initrd's duration is not known yet.
-            parts.push(format!("kernel {:.2}s", initrd_origin as f32 / 1e6));
-        } else if ph.initrd > 0 {
-            parts.push(format!("kernel {:.2}s", ph.initrd as f32 / 1e6));
-            parts.push(format!("initrd {:.2}s", ph.userspace.saturating_sub(ph.initrd) as f32 / 1e6));
-        } else if ph.userspace > 0 {
-            parts.push(format!("kernel {:.2}s", ph.userspace as f32 / 1e6));
-        }
-        if ph.finish > 0 {
-            parts.push(format!("userspace {:.2}s", ph.finish.saturating_sub(ph.userspace) as f32 / 1e6));
-        }
-        let bottom = h - 16.0 * s;
-        self.draw_text(pm, &parts.join("   ·   "), x, bottom, z.small, pal.muted);
+            // Phase bar along the bottom.
+            let mut parts = vec![];
+            if ph.firmware > ph.loader && ph.loader > 0 {
+                parts.push(format!(
+                    "firmware {:.1}s",
+                    (ph.firmware - ph.loader) as f32 / 1e6
+                ));
+            }
+            if ph.loader > 0 {
+                parts.push(format!("loader {:.1}s", ph.loader as f32 / 1e6));
+            }
+            if ph.in_initrd {
+                // The initrd's duration is not known yet.
+                parts.push(format!("kernel {:.2}s", initrd_origin as f32 / 1e6));
+            } else if ph.initrd > 0 {
+                parts.push(format!("kernel {:.2}s", ph.initrd as f32 / 1e6));
+                parts.push(format!(
+                    "initrd {:.2}s",
+                    ph.userspace.saturating_sub(ph.initrd) as f32 / 1e6
+                ));
+            } else if ph.userspace > 0 {
+                parts.push(format!("kernel {:.2}s", ph.userspace as f32 / 1e6));
+            }
+            if ph.finish > 0 {
+                parts.push(format!(
+                    "userspace {:.2}s",
+                    ph.finish.saturating_sub(ph.userspace) as f32 / 1e6
+                ));
+            }
+            let bottom = h - 16.0 * s;
+            self.draw_text(pm, &parts.join("   ·   "), x, bottom, z.small, pal.muted);
 
-        // Timeline scrubber.
-        if end > start {
-            let bar_y = bottom - z.small - 10.0 * s;
-            let bar_w = (w * 0.3).min(360.0 * s);
-            let f = (t.saturating_sub(start) as f32 / (end - start) as f32).clamp(0.0, 1.0);
-            if let Some(r) = Rect::from_xywh(x, bar_y, bar_w, 3.0 * s) {
-                pm.fill_rect(r, &paint(pal.track, 1.0), Transform::identity(), None);
+            // Timeline scrubber.
+            if end > start {
+                let bar_y = bottom - z.small - 10.0 * s;
+                let bar_w = (w * 0.3).min(360.0 * s);
+                let f = (t.saturating_sub(start) as f32 / (end - start) as f32).clamp(0.0, 1.0);
+                if let Some(r) = Rect::from_xywh(x, bar_y, bar_w, 3.0 * s) {
+                    pm.fill_rect(r, &paint(pal.track, 1.0), Transform::identity(), None);
+                }
+                if let Some(r) = Rect::from_xywh(x, bar_y, (bar_w * f).max(1.0), 3.0 * s) {
+                    pm.fill_rect(
+                        r,
+                        &paint(if finished { pal.active } else { pal.starting }, 1.0),
+                        Transform::identity(),
+                        None,
+                    );
+                }
             }
-            if let Some(r) = Rect::from_xywh(x, bar_y, (bar_w * f).max(1.0), 3.0 * s) {
-                pm.fill_rect(r, &paint(if finished { pal.active } else { pal.starting }, 1.0), Transform::identity(), None);
-            }
-        }
         }
 
         if show.legend {
             self.hud_legend(
                 pm,
                 &z,
-                &[("target", pal.target), ("active", pal.active), ("activating", pal.starting), ("exited", pal.exited), ("failed", pal.failed), ("process", pal.process)],
+                &[
+                    ("target", pal.target),
+                    ("active", pal.active),
+                    ("activating", pal.starting),
+                    ("exited", pal.exited),
+                    ("failed", pal.failed),
+                    ("process", pal.process),
+                ],
             );
         }
     }
@@ -1024,7 +1403,12 @@ fn rasterize_text(font: &Font, s: &str, px: f32, c: Rgb8) -> Option<Pixmap> {
     let ascent = lm.ascent.ceil();
     let height = (lm.ascent - lm.descent).ceil() as i32 + 1;
     let glyphs: Vec<_> = s.chars().map(|ch| font.rasterize(ch, px)).collect();
-    let width = glyphs.iter().map(|(m, _)| m.advance_width).sum::<f32>().ceil() as i32 + 2;
+    let width = glyphs
+        .iter()
+        .map(|(m, _)| m.advance_width)
+        .sum::<f32>()
+        .ceil() as i32
+        + 2;
     if width <= 2 || height <= 0 {
         return None;
     }
@@ -1075,8 +1459,11 @@ mod tests {
 
     /// Also returns where the center node is, in pixels.
     fn draw_with_origin(look: Look) -> (Pixmap, (u32, u32)) {
-        let tl = BootTimeline::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../samples/mbair-boot.json")))
-            .expect("sample loads");
+        let tl = BootTimeline::load(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../samples/mbair-boot.json"
+        )))
+        .expect("sample loads");
         let lay = Layout::compute(&tl, &LayoutOptions::default());
         let mut sim = Sim::new(&lay, ForceParams::default());
         sim.settle(300);
@@ -1085,7 +1472,18 @@ mod tests {
         let mut r = Renderer::new(RenderOptions::default(), look);
         let mut pm = Pixmap::new(W, H).unwrap();
         let t = tl.span().1 + SETTLE_USEC;
-        r.render(&mut pm, &Frame { lay: &lay, pos: &pos, cam, hover: None }, &tl, t, 0.0);
+        r.render(
+            &mut pm,
+            &Frame {
+                lay: &lay,
+                pos: &pos,
+                cam,
+                hover: None,
+            },
+            &tl,
+            t,
+            0.0,
+        );
         let (ox, oy) = cam.to_px(W as f32, H as f32, 0.0, 0.0);
         (pm, (ox.round() as u32, oy.round() as u32))
     }
@@ -1096,13 +1494,18 @@ mod tests {
     }
 
     fn close(a: [u8; 3], b: [u8; 3], tol: i32) -> bool {
-        a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= tol)
+        a.iter()
+            .zip(b)
+            .all(|(x, y)| (*x as i32 - y as i32).abs() <= tol)
     }
 
     #[test]
     fn background_comes_from_the_palette() {
         let mut look = Look::default();
-        look.palette = Palette { background: Rgb8(10, 20, 30), ..look.palette };
+        look.palette = Palette {
+            background: Rgb8(10, 20, 30),
+            ..look.palette
+        };
         let pm = draw(look);
         assert_eq!(rgb(&pm, W - 1, H - 1), [10, 20, 30]);
         assert_eq!(rgb(&pm, W - 1, H / 2), [10, 20, 30]);
@@ -1112,26 +1515,51 @@ mod tests {
     fn center_image_replaces_the_disc() {
         let mut img = Pixmap::new(8, 8).unwrap();
         img.fill(Color::from_rgba8(200, 30, 60, 255));
-        let look = Look { center_image: Some(img), ..Look::default() };
+        let look = Look {
+            center_image: Some(img),
+            ..Look::default()
+        };
         let (pm, (ox, oy)) = draw_with_origin(look);
         let got = rgb(&pm, ox, oy);
         // The node is drawn at 95% opacity over a faint halo.
         assert!(close(got, [200, 30, 60], 25), "center pixel is {got:?}");
         let (disc, _) = draw_with_origin(Look::default());
-        assert!(!close(rgb(&disc, ox, oy), [200, 30, 60], 60), "the default disc is not the image");
+        assert!(
+            !close(rgb(&disc, ox, oy), [200, 30, 60], 60),
+            "the default disc is not the image"
+        );
     }
 
     #[test]
     fn empty_title_draws_no_heading() {
-        let only_title = Show { status: false, activity: false, legend: false, phases: false, ..Show::default() };
+        let only_title = Show {
+            status: false,
+            activity: false,
+            legend: false,
+            phases: false,
+            ..Show::default()
+        };
         let strip = |pm: &Pixmap| {
             let bg = rgb(pm, W - 1, H - 1);
-            (18..44).flat_map(|y| (18..260).map(move |x| (x, y))).filter(|&(x, y)| rgb(pm, x, y) != bg).count()
+            (18..44)
+                .flat_map(|y| (18..260).map(move |x| (x, y)))
+                .filter(|&(x, y)| rgb(pm, x, y) != bg)
+                .count()
         };
-        let mut look = Look { show: only_title, ..Look::default() };
-        assert!(strip(&draw(look.clone())) > 0, "the default heading is drawn");
+        let mut look = Look {
+            show: only_title,
+            ..Look::default()
+        };
+        assert!(
+            strip(&draw(look.clone())) > 0,
+            "the default heading is drawn"
+        );
         look.title = Some(String::new());
-        assert_eq!(strip(&draw(look.clone())), 0, "no heading, nothing else in its place");
+        assert_eq!(
+            strip(&draw(look.clone())),
+            0,
+            "no heading, nothing else in its place"
+        );
         look.title = Some("My boot".into());
         assert!(strip(&draw(look)) > 0);
     }
@@ -1142,7 +1570,13 @@ mod tests {
         let pm = draw(parsed.resolve().unwrap());
         let bg = rgb(&pm, W - 1, H - 1);
         // Top-left corner and bottom line are empty.
-        for (x, y) in [(20, 20), (100, 30), (30, H - 20), (200, H - 20), (W - 40, 30)] {
+        for (x, y) in [
+            (20, 20),
+            (100, 30),
+            (30, H - 20),
+            (200, H - 20),
+            (W - 40, 30),
+        ] {
             assert_eq!(rgb(&pm, x, y), bg, "({x},{y})");
         }
     }

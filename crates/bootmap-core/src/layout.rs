@@ -37,7 +37,9 @@ pub struct LayoutOptions {
 impl Default for LayoutOptions {
     fn default() -> Self {
         Self {
-            hidden_kinds: [UnitKind::Device, UnitKind::Slice, UnitKind::Scope].into_iter().collect(),
+            hidden_kinds: [UnitKind::Device, UnitKind::Slice, UnitKind::Scope]
+                .into_iter()
+                .collect(),
             include_never_started: false,
             processes: true,
         }
@@ -101,7 +103,11 @@ pub struct Layout {
 type Key = (Usec, u32, String);
 
 fn order_key(u: &Unit, rank: u32) -> Key {
-    (u.t_done().or(u.t_activating).unwrap_or(Usec::MAX), rank, u.name.clone())
+    (
+        u.t_done().or(u.t_activating).unwrap_or(Usec::MAX),
+        rank,
+        u.name.clone(),
+    )
 }
 
 /// Longest `After=` chain below each visible unit (cycles broken arbitrarily).
@@ -169,16 +175,28 @@ fn entities<'a>(visible: &[&'a Unit]) -> Vec<Entity<'a>> {
     let mut out: Vec<Entity> = vec![];
     let mut group_at: HashMap<String, usize> = HashMap::new();
     for u in visible {
-        let grouped = template_of(&u.name).filter(|t| by_template.get(t).is_some_and(|m| m.len() >= 2 && m.iter().any(|m| m.name == u.name)));
+        let grouped = template_of(&u.name).filter(|t| {
+            by_template
+                .get(t)
+                .is_some_and(|m| m.len() >= 2 && m.iter().any(|m| m.name == u.name))
+        });
         match grouped {
             Some(t) => match group_at.get(&t) {
                 Some(&i) => out[i].members.push(u),
                 None => {
                     group_at.insert(t.clone(), out.len());
-                    out.push(Entity { name: t, kind: u.kind, members: vec![u] });
+                    out.push(Entity {
+                        name: t,
+                        kind: u.kind,
+                        members: vec![u],
+                    });
                 }
             },
-            None => out.push(Entity { name: u.name.clone(), kind: u.kind, members: vec![u] }),
+            None => out.push(Entity {
+                name: u.name.clone(),
+                kind: u.kind,
+                members: vec![u],
+            }),
         }
     }
     out
@@ -190,7 +208,12 @@ impl Layout {
             .units
             .values()
             .filter(|u| !opts.hidden_kinds.contains(&u.kind))
-            .filter(|u| opts.include_never_started || u.job || u.t_activating.is_some() || u.t_active.is_some())
+            .filter(|u| {
+                opts.include_never_started
+                    || u.job
+                    || u.t_activating.is_some()
+                    || u.t_active.is_some()
+            })
             .collect();
         let ents = entities(&visible);
 
@@ -232,8 +255,18 @@ impl Layout {
         let ranks = after_ranks(tl, &lay.index);
         let keys: Vec<Option<Key>> = std::iter::once(None)
             .chain(ents.iter().map(|e| {
-                let t = e.members.iter().map(|m| order_key(m, 0).0).max().unwrap_or(Usec::MAX);
-                let rank = e.members.iter().map(|m| ranks.get(&m.name).copied().unwrap_or(0)).max().unwrap_or(0);
+                let t = e
+                    .members
+                    .iter()
+                    .map(|m| order_key(m, 0).0)
+                    .max()
+                    .unwrap_or(Usec::MAX);
+                let rank = e
+                    .members
+                    .iter()
+                    .map(|m| ranks.get(&m.name).copied().unwrap_or(0))
+                    .max()
+                    .unwrap_or(0);
                 Some((t, rank, e.name.clone()))
             }))
             .collect();
@@ -281,7 +314,11 @@ impl Layout {
         }
         for &n in order.iter().rev() {
             let own = 1.0 / radius(lay.nodes[n].depth.max(1));
-            let sum: f32 = lay.nodes[n].children.iter().map(|&c| lay.nodes[c].weight).sum();
+            let sum: f32 = lay.nodes[n]
+                .children
+                .iter()
+                .map(|&c| lay.nodes[c].weight)
+                .sum();
             lay.nodes[n].weight = own.max(sum);
         }
         lay.max_depth = lay.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
@@ -290,7 +327,11 @@ impl Layout {
         lay.nodes[ROOT].wedge = (-TAU / 4.0, TAU * 0.75);
         for &n in &order {
             let (a0, a1) = lay.nodes[n].wedge;
-            let total: f32 = lay.nodes[n].children.iter().map(|&c| lay.nodes[c].weight).sum();
+            let total: f32 = lay.nodes[n]
+                .children
+                .iter()
+                .map(|&c| lay.nodes[c].weight)
+                .sum();
             let mut a = a0;
             for c in lay.nodes[n].children.clone() {
                 let w = (a1 - a0) * lay.nodes[c].weight / total.max(f32::EPSILON);
@@ -306,7 +347,13 @@ impl Layout {
         let mut seen = BTreeSet::new();
         for (ei, e) in ents.iter().enumerate() {
             let me = ei + 1;
-            for d in e.members.iter().flat_map(|m| m.deps.requires.iter().chain(&m.deps.wants).chain(&m.deps.binds_to)) {
+            for d in e.members.iter().flat_map(|m| {
+                m.deps
+                    .requires
+                    .iter()
+                    .chain(&m.deps.wants)
+                    .chain(&m.deps.binds_to)
+            }) {
                 if let Some(&o) = lay.index.get(d) {
                     let tree = lay.nodes[me].parent == Some(o) || lay.nodes[o].parent == Some(me);
                     if !tree && o != me && seen.insert((me.min(o), me.max(o))) {
@@ -320,7 +367,11 @@ impl Layout {
         if opts.processes {
             for (ei, e) in ents.iter().enumerate() {
                 for m in &e.members {
-                    lay.procs.extend(m.processes.iter().map(|p| ProcNode { unit: ei + 1, pid: p.pid, comm: p.comm.clone() }));
+                    lay.procs.extend(m.processes.iter().map(|p| ProcNode {
+                        unit: ei + 1,
+                        pid: p.pid,
+                        comm: p.comm.clone(),
+                    }));
                 }
             }
         }
@@ -367,9 +418,19 @@ mod tests {
 
     #[test]
     fn template_names() {
-        assert_eq!(template_of("modprobe@drm.service").as_deref(), Some("modprobe@.service"));
-        assert_eq!(template_of("getty@tty1.service").as_deref(), Some("getty@.service"));
-        assert_eq!(template_of("modprobe@.service"), None, "the template itself");
+        assert_eq!(
+            template_of("modprobe@drm.service").as_deref(),
+            Some("modprobe@.service")
+        );
+        assert_eq!(
+            template_of("getty@tty1.service").as_deref(),
+            Some("getty@.service")
+        );
+        assert_eq!(
+            template_of("modprobe@.service"),
+            None,
+            "the template itself"
+        );
         assert_eq!(template_of("sysinit.target"), None);
         assert_eq!(template_of("-.mount"), None);
     }
@@ -391,17 +452,31 @@ mod tests {
         add("modprobe@fuse.service", 120, UnitState::Active, &[]);
         add("modprobe@loop.service", 130, UnitState::Failed, &[]);
         add("getty@tty1.service", 140, UnitState::Active, &[]);
-        add("sysinit.target", 200, UnitState::Active, &["modprobe@drm.service", "modprobe@fuse.service"]);
+        add(
+            "sysinit.target",
+            200,
+            UnitState::Active,
+            &["modprobe@drm.service", "modprobe@fuse.service"],
+        );
         tl.synthesize_events();
         let lay = Layout::compute(&tl, &LayoutOptions::default());
 
         let g = lay.index["modprobe@.service"];
-        assert_eq!(lay.nodes[g].units, ["modprobe@drm.service", "modprobe@fuse.service"]);
+        assert_eq!(
+            lay.nodes[g].units,
+            ["modprobe@drm.service", "modprobe@fuse.service"]
+        );
         assert_eq!(lay.index["modprobe@drm.service"], g);
         assert_eq!(lay.index["modprobe@fuse.service"], g);
         // The failed instance and a lone instance keep their own nodes.
-        assert_eq!(lay.nodes[lay.index["modprobe@loop.service"]].units, ["modprobe@loop.service"]);
-        assert_eq!(lay.nodes[lay.index["getty@tty1.service"]].units, ["getty@tty1.service"]);
+        assert_eq!(
+            lay.nodes[lay.index["modprobe@loop.service"]].units,
+            ["modprobe@loop.service"]
+        );
+        assert_eq!(
+            lay.nodes[lay.index["getty@tty1.service"]].units,
+            ["getty@tty1.service"]
+        );
         // Dependencies on members point at the group.
         assert_eq!(lay.nodes[lay.index["sysinit.target"]].parent, Some(g));
         assert_eq!(lay.nodes.len(), 1 + 4);
@@ -432,7 +507,11 @@ mod tests {
             for &c in &n.children {
                 let w = lay.nodes[c].wedge;
                 assert!(w.0 >= prev_end - eps, "overlap under {}", n.name);
-                assert!(w.1 <= n.wedge.1 + eps, "{} escapes parent wedge", lay.nodes[c].name);
+                assert!(
+                    w.1 <= n.wedge.1 + eps,
+                    "{} escapes parent wedge",
+                    lay.nodes[c].name
+                );
                 prev_end = w.1;
             }
         }
@@ -458,8 +537,14 @@ mod tests {
         // Every link must have become active no later than the next one.
         let tl = sample();
         for w in chain[1..].windows(2) {
-            let a = tl.units[w[0]].t_done().or(tl.units[w[0]].t_activating).unwrap();
-            let b = tl.units[w[1]].t_done().or(tl.units[w[1]].t_activating).unwrap();
+            let a = tl.units[w[0]]
+                .t_done()
+                .or(tl.units[w[0]].t_activating)
+                .unwrap();
+            let b = tl.units[w[1]]
+                .t_done()
+                .or(tl.units[w[1]].t_activating)
+                .unwrap();
             assert!(a <= b, "{} ({a}) after {} ({b})", w[0], w[1]);
         }
     }
