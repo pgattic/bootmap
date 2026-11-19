@@ -21,6 +21,20 @@ in
 pkgs.testers.runNixOSTest {
   name = "bootmap";
 
+  # The test framework gives aarch64 VMs a virtio GPU, but leaves x86_64 ones
+  # on QEMU's standard VGA under legacy BIOS: no framebuffer and no driver in
+  # the initrd, so nothing to draw on there (and the passphrase goes to the
+  # console agent). Use the same display on both, so the initrd subtests see
+  # one; latedisplay takes its driver out of the initrd on purpose.
+  defaults =
+    { lib, pkgs, ... }:
+    {
+      virtualisation.qemu.options = lib.mkIf pkgs.stdenv.hostPlatform.isx86 [
+        "-vga none"
+        "-device virtio-gpu-pci"
+      ];
+    };
+
   nodes = {
     # No login screen to hand over to: hold the finished graph for a while so
     # the screenshot can catch it, then exit on our own. A second graphics
@@ -220,13 +234,13 @@ pkgs.testers.runNixOSTest {
 
     with subtest("luks: the passphrase prompt is shown and answered from the keyboard"):
         luks.start()
-        luks.wait_for_console_text("bootmap: asking for a passphrase")
+        luks.wait_for_console_text("bootmap: asking for a passphrase", timeout=180)
         time.sleep(1)
         luks.screenshot("passphrase-prompt")
         luks.send_chars("not the passphrase\n")
-        luks.wait_for_console_text("bootmap: answered a passphrase request")
+        luks.wait_for_console_text("bootmap: answered a passphrase request", timeout=60)
         # cryptsetup rejects it and asks again.
-        luks.wait_for_console_text("bootmap: asking for a passphrase")
+        luks.wait_for_console_text("bootmap: asking for a passphrase", timeout=180)
         luks.send_chars("sample")
         time.sleep(1)
         luks.screenshot("passphrase-retry")
@@ -256,12 +270,12 @@ pkgs.testers.runNixOSTest {
 
     with subtest("initrd: one process follows the boot across switch-root"):
         initrd.start()
-        initrd.wait_for_console_text("bootmap: drawing on")
+        initrd.wait_for_console_text("bootmap: drawing on", timeout=180)
         time.sleep(2)  # host-side; lands while slow-initrd is still sleeping
         initrd.screenshot("initrd")
         # Right after the switch, while the display is still ours: once the
         # getty starts, its login prompt covers the graph.
-        initrd.wait_for_console_text("followed systemd into the real root")
+        initrd.wait_for_console_text("followed systemd into the real root", timeout=120)
         time.sleep(1.5)
         initrd.screenshot("after-switch")
         initrd.wait_for_unit("multi-user.target")

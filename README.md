@@ -66,7 +66,7 @@ Add bootmap to your flake and enable it:
 }
 ```
 
-Rebuild and reboot. For more info on `services.bootmap.initrd = true;`, see
+Rebuild and reboot. For more info on `services.bootmap.initrd`, see
 [starting in the initrd](docs/usage.md#starting-in-the-initrd).
 
 ## Documentation
