@@ -99,6 +99,8 @@ pkgs.testers.runNixOSTest {
           initrd = true;
           holdSeconds = 8;
           handoverUnits = [ ];
+          # Also covers the boot-only build, in the initrd.
+          bootPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.bootmap-minimal;
         };
         boot.initrd.kernelModules = lib.mkForce [
           "virtio_balloon"

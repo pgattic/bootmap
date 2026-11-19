@@ -54,7 +54,7 @@ let
       # has stopped expecting one in time. The console password agent is
       # ordered after this.
       Type = "notify";
-      ExecStart = "@${lib.getExe cfg.package} @bootmap boot ${args}";
+      ExecStart = "@${lib.getExe cfg.bootPackage} @bootmap boot ${args}";
       Restart = "no";
       TimeoutStopSec = "3s";
       RuntimeDirectory = "bootmap";
@@ -79,24 +79,26 @@ in
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.bootmap-minimal;
-      defaultText = lib.literalExpression "bootmap.packages.\${system}.bootmap-minimal";
-      description = ''
-        bootmap build the boot-time services run (in the initrd too, with
-        `initrd`). Only `bootmap boot` is needed, so the default is the build
-        with nothing else and no windowing libraries.
-      '';
-    };
-
-    userPackage = mkOption {
-      type = types.nullOr types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.bootmap;
       defaultText = lib.literalExpression "bootmap.packages.\${system}.bootmap";
       description = ''
-        bootmap build installed for users, with `bootmap view` to replay a
-        recorded boot (`bootmap view /var/log/bootmap/last.json`) or watch
-        systemd live, plus `render` and `capture`. `null` installs nothing,
-        for example on a machine without a desktop.
+        bootmap build to install and to run at boot. Installed for users:
+        `bootmap view /var/log/bootmap/last.json` replays the recorded boot,
+        `bootmap view` watches systemd live.
+      '';
+    };
+
+    bootPackage = mkOption {
+      type = types.package;
+      default = cfg.package;
+      defaultText = lib.literalExpression "config.services.bootmap.package";
+      example = lib.literalExpression "bootmap.packages.\${system}.bootmap-minimal";
+      description = ''
+        bootmap build the boot-time services run, and with `initrd` the one
+        copied into every generation's initrd. `bootmap-minimal` has only
+        `bootmap boot`, which is all they need: it makes each initrd about
+        1 MiB smaller (compressed). Without `initrd` the choice does not
+        affect /boot.
       '';
     };
 
@@ -217,7 +219,7 @@ in
     systemd.paths.systemd-ask-password-console = consoleAgentPath;
 
     boot.initrd.systemd = mkIf cfg.initrd {
-      storePaths = [ (lib.getExe cfg.package) ];
+      storePaths = [ (lib.getExe cfg.bootPackage) ];
       services.bootmap = bootmapService;
       paths.systemd-ask-password-console = consoleAgentPath;
     };
@@ -234,7 +236,7 @@ in
       after = [ "bootmap.service" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${lib.getExe cfg.package} boot --shutdown ${args}";
+        ExecStart = "${lib.getExe cfg.bootPackage} boot --shutdown ${args}";
         Restart = "no";
       };
     };
@@ -268,6 +270,6 @@ in
       };
     };
 
-    environment.systemPackages = lib.optional (cfg.userPackage != null) cfg.userPackage;
+    environment.systemPackages = [ cfg.package ];
   };
 }
