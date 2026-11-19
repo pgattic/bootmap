@@ -47,30 +47,49 @@ impl Signals {
     }
 }
 
-/// Wait for a display. Returns None if none shows up before `deadline`, or if
-/// we are asked to stop or release while waiting (then there is nothing to
-/// draw on, but still a boot to record). `seen` keeps each distinct problem
-/// from being logged more than once across retries.
-fn open_display(deadline: Instant, sig: &Signals, seen: &mut HashSet<String>) -> Option<Display> {
-    loop {
+/// Looking for a display without holding up the main loop. The boot must be
+/// followed whether or not a display has shown up: on a machine whose GPU
+/// driver only loads in the real system, there is none in the initrd, and
+/// the switch to the real root has to be caught all the same.
+struct DisplaySearch {
+    started: Instant,
+    next_try: Instant,
+    /// Stop looking after this (the shutdown view, when a compositor never
+    /// lets go). A boot keeps looking until it is over.
+    give_up: Option<Instant>,
+    /// Problems already logged: attempts repeat every 100 ms.
+    seen: HashSet<String>,
+    reported: bool,
+}
+
+impl DisplaySearch {
+    /// How long until "no display yet" is logged.
+    const NOTICE: Duration = Duration::from_secs(3);
+
+    fn new(give_up_after: Option<Duration>) -> Self {
+        let now = Instant::now();
+        Self { started: now, next_try: now, give_up: give_up_after.map(|d| now + d), seen: HashSet::new(), reported: false }
+    }
+
+    /// One attempt, if it is time for one.
+    fn try_open(&mut self) -> Option<Display> {
+        let now = Instant::now();
+        if now < self.next_try || self.give_up.is_some_and(|g| now >= g) {
+            return None;
+        }
+        self.next_try = now + Duration::from_millis(100);
         let mut problems = vec![];
         let display = Display::open(&mut problems);
         for p in problems {
-            if seen.insert(p.clone()) {
+            if self.seen.insert(p.clone()) {
                 eprintln!("bootmap: {p}");
             }
         }
-        if display.is_some() {
-            return display;
+        if display.is_none() && !self.reported && now.duration_since(self.started) >= Self::NOTICE {
+            self.reported = true;
+            eprintln!("bootmap: no usable display yet; recording, and still looking");
         }
-        if sig.stopped() || sig.released() {
-            return None;
-        }
-        if Instant::now() > deadline {
-            eprintln!("bootmap: no usable display found; recording only");
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        display
     }
 }
 
@@ -165,12 +184,12 @@ impl Console {
     /// `display` is already open. `vt` may have been entered earlier (the
     /// shutdown view switches first, to make a compositor let go).
     fn new(display: Display, vt: Option<Vt>, vt_number: u32, prompts: Prompts, marker: PathBuf) -> Self {
-        // Yielding to the console agent means staying off the keyboard, and
-        // the VT is where the keyboard goes.
-        let vt = match prompts {
-            Prompts::Yield => None,
-            _ => vt.or_else(|| Vt::enter(vt_number)),
-        };
+        // Our own VT in every case, so that nothing else on the console's VT
+        // (a login prompt starting there) takes the screen back. When the
+        // console agent is in charge, nobody reads the keyboard here, and the
+        // moment it asks for anything we switch back (`must_yield`), so its
+        // prompt is seen and typed into as usual.
+        let vt = vt.or_else(|| Vt::enter(vt_number));
         let agent = (prompts == Prompts::Answer && vt.is_some()).then(Agent::new);
         if agent.is_some() {
             if let Some(dir) = marker.parent() {
@@ -245,32 +264,21 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
     // makes it let go, which may take a moment. During a boot the VT is only
     // taken once there is a display, so a machine without one keeps its
     // text console.
-    let early_vt = if shutdown { Vt::enter(vt_number) } else { None };
-    let prompts = if replay { Prompts::Ignore } else { Prompts::Answer };
-    let mut seen = HashSet::new();
-    // During a boot, systemd holds its console password agent back until we
-    // report ready, so that wait is kept short.
-    let first_wait = Duration::from_secs(if shutdown { 30 } else { 3 });
-    let mut console = open_display(Instant::now() + first_wait, &sig, &mut seen)
-        .map(|d| Console::new(d, early_vt, vt_number, prompts, agent_marker.clone()));
-    if shutdown && console.is_some() {
-        eprintln!("bootmap: showing shutdown");
-    }
-    sd_notify("READY=1");
-    if console.is_none() && !shutdown && !sig.stopped() && !sig.released() {
-        // A display may still show up (a driver that loads late), but the
-        // console agent is in charge of passphrases from here on.
-        let late = if replay { Prompts::Ignore } else { Prompts::Yield };
-        console = open_display(Instant::now() + Duration::from_secs(17), &sig, &mut seen)
-            .map(|d| Console::new(d, None, vt_number, late, agent_marker.clone()));
-    }
-    let size = console.as_ref().and_then(|c| c.display.as_ref()).map(Display::size).unwrap_or((1, 1));
-    let mut pm = tiny_skia::Pixmap::new(size.0, size.1).context("pixmap")?;
+    let mut early_vt = if shutdown { Vt::enter(vt_number) } else { None };
+    let mut search = DisplaySearch::new(shutdown.then_some(Duration::from_secs(30)));
+    let mut console: Option<Console> = None;
+    // systemd holds its console password agent back until we report ready,
+    // so that happens once we have a display (and answer passphrases
+    // ourselves) or after a short wait without one (then it answers them).
+    let mut ready = false;
+    let mut pm = tiny_skia::Pixmap::new(1, 1).context("pixmap")?;
     let frame = Duration::from_millis(33);
     let mut saved = false;
     let mut last_check = Instant::now();
     let mut frames: u64 = 0;
     let mut released_at: Option<Instant> = None;
+    // When the display went away without a replacement yet.
+    let mut lost_at: Option<Instant> = None;
     // Started in the initrd: hold /sysroot so we can follow the switch to the real root.
     let mut in_initrd = !replay && scene.source.tl.phases.in_initrd;
     let mut sysroot: Option<File> = None;
@@ -295,8 +303,36 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
             released_at = Some(Instant::now());
         }
 
-        let mut display_lost = false;
-        match &mut console {
+        // Find a display if we have none: the first one, or the replacement
+        // after a driver swap (simpledrm handing over to the real driver).
+        let has_display = console.as_ref().is_some_and(|c| c.display.is_some());
+        if !has_display && released_at.is_none() {
+            if let Some(d) = search.try_open() {
+                let (w, h) = d.size();
+                pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
+                lost_at = None;
+                match &mut console {
+                    Some(c) => c.display = Some(d),
+                    None => {
+                        let prompts = match (replay, ready) {
+                            (true, _) => Prompts::Ignore,
+                            (false, false) => Prompts::Answer,
+                            (false, true) => Prompts::Yield,
+                        };
+                        console = Some(Console::new(d, early_vt.take(), vt_number, prompts, agent_marker.clone()));
+                        if shutdown {
+                            eprintln!("bootmap: showing shutdown");
+                        }
+                    }
+                }
+            }
+        }
+        if !ready && (shutdown || console.is_some() || search.started.elapsed() >= DisplaySearch::NOTICE) {
+            sd_notify("READY=1");
+            ready = true;
+        }
+
+        match console.as_mut().filter(|c| c.display.is_some()) {
             Some(c) => {
                 scene.renderer.prompt = c.prompt();
                 scene.frame(&mut pm);
@@ -306,16 +342,11 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
                 }
                 frames += 1;
                 if res.is_err() || (last_check.elapsed() > Duration::from_millis(500) && c.display_gone()) {
-                    // The device went away (simpledrm handed over to the real
-                    // driver). Let go of the old one first, then take the new
-                    // one; the VT and a half-typed passphrase stay.
+                    // The device went away. Let go of it; the search takes the
+                    // replacement, and the VT and a half-typed passphrase stay.
                     last_check = Instant::now();
                     c.display = None;
-                    c.display = open_display(Instant::now() + Duration::from_secs(10), &sig, &mut seen);
-                    match c.display.as_ref().map(Display::size) {
-                        Some((w, h)) => pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?,
-                        None => display_lost = true,
-                    }
+                    lost_at = Some(Instant::now());
                 }
             }
             None => {
@@ -323,10 +354,14 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
                 scene.source.poll();
             }
         }
-        if display_lost {
+        if lost_at.is_some_and(|t| t.elapsed() > Duration::from_secs(10)) {
+            // No replacement: give up the VT and the passphrase prompt too,
+            // so the text console can ask instead.
             console = None;
             scene.renderer.prompt = None;
+            lost_at = None;
         }
+        let has_display = console.as_ref().is_some_and(|c| c.display.is_some());
 
         if let Some(done) = scene.source.finished_for().filter(|_| !shutdown) {
             if !saved && !replay {
@@ -334,7 +369,7 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
                 saved = true;
             }
             // Done once released or headless (nothing left to show), or after the hold.
-            if released_at.is_some() || console.is_none() || (hold > 0.0 && done >= hold) {
+            if released_at.is_some() || !has_display || (hold > 0.0 && done >= hold) {
                 break;
             }
         }
@@ -368,7 +403,7 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
             in_initrd = false;
             scene.source.reconnect();
         }
-        let pace = if console.is_some() { frame } else { Duration::from_millis(100) };
+        let pace = if has_display { frame } else { Duration::from_millis(100) };
         std::thread::sleep(pace.saturating_sub(t0.elapsed()));
     }
     // Never write a recording from inside the initrd.

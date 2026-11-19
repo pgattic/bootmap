@@ -86,6 +86,28 @@ pkgs.testers.runNixOSTest {
         boot.initrd.systemd.services.bootmap.serviceConfig.StandardError = "journal+console";
       };
 
+    # Like a legacy-BIOS laptop: no display at all in the initrd (no firmware
+    # framebuffer, GPU driver not in the initrd), so the display only appears
+    # once the real system loads the driver. bootmap must follow the switch to
+    # the real root without one, then start drawing.
+    latedisplay =
+      { lib, pkgs, ... }:
+      {
+        imports = [ self.nixosModules.default ];
+        services.bootmap = {
+          enable = true;
+          initrd = true;
+          holdSeconds = 8;
+          handoverUnits = [ ];
+        };
+        boot.initrd.kernelModules = lib.mkForce [
+          "virtio_balloon"
+          "virtio_console"
+          "virtio_rng"
+        ];
+        environment.systemPackages = [ pkgs.jq ];
+      };
+
     # A real graphical greeter (a Wayland compositor holding DRM master) with
     # the default handover:
     # - the greeter must start (it used to be dropped from the boot
@@ -186,6 +208,18 @@ pkgs.testers.runNixOSTest {
         luks.fail("systemctl is-failed systemd-ask-password-console.path systemd-ask-password-console.service")
         luks.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=60)
         luks.fail("test -e /run/bootmap/agent")
+
+    with subtest("latedisplay: no display in the initrd, drawing once the driver loads"):
+        latedisplay.start()
+        latedisplay.wait_for_unit("multi-user.target")
+        unit_log = latedisplay.succeed("journalctl -b -u bootmap.service --no-pager")
+        print(unit_log)
+        assert "followed systemd into the real root" in unit_log, unit_log
+        assert unit_log.count("bootmap: drawing on") == 1, unit_log
+        latedisplay.succeed("test $(cat /sys/class/tty/tty0/active) = tty12")
+        latedisplay.screenshot("late-display")
+        latedisplay.wait_until_succeeds("jq -e '.phases.finish > 0' /var/log/bootmap/last.json", timeout=60)
+        latedisplay.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
 
     with subtest("initrd: one process follows the boot across switch-root"):
         initrd.start()
