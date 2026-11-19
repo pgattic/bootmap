@@ -50,17 +50,20 @@ Add bootmap to your flake and enable it:
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       modules = [
         bootmap.nixosModules.default
-        { services.bootmap.enable = true; }
+        {
+          services.bootmap = {
+            enable = true;
+            initrd = true;
+          };
+        }
       ];
     };
   };
 }
 ```
 
-Rebuild and reboot. To see the boot from its very start, add
-`services.bootmap.initrd = true;` (see
-[starting in the initrd](docs/usage.md#starting-in-the-initrd) for when that
-helps).
+Rebuild and reboot. For more info on `services.bootmap.initrd = true;`, see
+[starting in the initrd](docs/usage.md#starting-in-the-initrd).
 
 ## Documentation
 
