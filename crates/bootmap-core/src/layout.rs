@@ -11,7 +11,7 @@
 //! and comes out the same every boot, and its depths are what the
 //! simulation's radial pull aims for.
 
-use crate::model::{BootTimeline, Unit, UnitKind, Usec};
+use crate::model::{BootTimeline, Unit, UnitKind, UnitState, Usec};
 use std::collections::{BTreeSet, HashMap};
 use std::f32::consts::TAU;
 
@@ -46,8 +46,12 @@ impl Default for LayoutOptions {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    /// Unit name; the root is "system".
+    /// Unit name, the template's name for a group (`modprobe@.service`), or
+    /// "system" for the root.
     pub name: String,
+    /// The units this node stands for: one, the instances of a template, or
+    /// none (the root).
+    pub units: Vec<String>,
     pub kind: Option<UnitKind>,
     pub parent: Option<usize>,
     pub children: Vec<usize>,
@@ -79,6 +83,8 @@ pub struct ProcNode {
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
     pub nodes: Vec<Node>,
+    /// Node of each unit name (a group's members map to the group), and of
+    /// each group's template name.
     pub index: HashMap<String, usize>,
     /// Non-tree Requires/Wants/BindsTo edges between visible units.
     pub extra_edges: Vec<(usize, usize)>,
@@ -132,6 +138,52 @@ fn after_ranks(tl: &BootTimeline, index: &HashMap<String, usize>) -> HashMap<Str
     memo
 }
 
+/// The template a unit is an instance of: `name@instance.type` is an
+/// instance of `name@.type`. This is systemd's own naming rule (and every
+/// instance's unit file is the template's), so it is exact, not a guess.
+pub fn template_of(unit: &str) -> Option<String> {
+    let (prefix, rest) = unit.split_once('@')?;
+    let dot = rest.rfind('.')?;
+    let (instance, suffix) = rest.split_at(dot);
+    (!prefix.is_empty() && !instance.is_empty()).then(|| format!("{prefix}@{suffix}"))
+}
+
+/// What becomes one node: a unit, or the instances of one template.
+struct Entity<'a> {
+    name: String,
+    kind: UnitKind,
+    members: Vec<&'a Unit>,
+}
+
+/// Group template instances (two or more) into one entity each. Instances
+/// that failed stay on their own, so a group never hides a problem.
+fn entities<'a>(visible: &[&'a Unit]) -> Vec<Entity<'a>> {
+    let mut by_template: HashMap<String, Vec<&Unit>> = HashMap::new();
+    for u in visible {
+        if u.state != UnitState::Failed {
+            if let Some(t) = template_of(&u.name) {
+                by_template.entry(t).or_default().push(u);
+            }
+        }
+    }
+    let mut out: Vec<Entity> = vec![];
+    let mut group_at: HashMap<String, usize> = HashMap::new();
+    for u in visible {
+        let grouped = template_of(&u.name).filter(|t| by_template.get(t).is_some_and(|m| m.len() >= 2 && m.iter().any(|m| m.name == u.name)));
+        match grouped {
+            Some(t) => match group_at.get(&t) {
+                Some(&i) => out[i].members.push(u),
+                None => {
+                    group_at.insert(t.clone(), out.len());
+                    out.push(Entity { name: t, kind: u.kind, members: vec![u] });
+                }
+            },
+            None => out.push(Entity { name: u.name.clone(), kind: u.kind, members: vec![u] }),
+        }
+    }
+    out
+}
+
 impl Layout {
     pub fn compute(tl: &BootTimeline, opts: &LayoutOptions) -> Self {
         let visible: Vec<&Unit> = tl
@@ -140,10 +192,12 @@ impl Layout {
             .filter(|u| !opts.hidden_kinds.contains(&u.kind))
             .filter(|u| opts.include_never_started || u.job || u.t_activating.is_some() || u.t_active.is_some())
             .collect();
+        let ents = entities(&visible);
 
         let mut lay = Layout::default();
         lay.nodes.push(Node {
             name: "system".into(),
+            units: vec![],
             kind: None,
             parent: None,
             children: vec![],
@@ -153,11 +207,16 @@ impl Layout {
             wedge: (0.0, TAU),
             weight: 0.0,
         });
-        for u in &visible {
-            lay.index.insert(u.name.clone(), lay.nodes.len());
+        for e in &ents {
+            let i = lay.nodes.len();
+            lay.index.insert(e.name.clone(), i);
+            for m in &e.members {
+                lay.index.insert(m.name.clone(), i);
+            }
             lay.nodes.push(Node {
-                name: u.name.clone(),
-                kind: Some(u.kind),
+                name: e.name.clone(),
+                units: e.members.iter().map(|m| m.name.clone()).collect(),
+                kind: Some(e.kind),
                 parent: None,
                 children: vec![],
                 depth: 0,
@@ -168,23 +227,30 @@ impl Layout {
             });
         }
 
+        // A group orders by its last member to finish (pending if any member
+        // is), at the deepest of its members' `After=` chains.
         let ranks = after_ranks(tl, &lay.index);
         let keys: Vec<Option<Key>> = std::iter::once(None)
-            .chain(visible.iter().map(|u| Some(order_key(u, ranks[&u.name]))))
+            .chain(ents.iter().map(|e| {
+                let t = e.members.iter().map(|m| order_key(m, 0).0).max().unwrap_or(Usec::MAX);
+                let rank = e.members.iter().map(|m| ranks.get(&m.name).copied().unwrap_or(0)).max().unwrap_or(0);
+                Some((t, rank, e.name.clone()))
+            }))
             .collect();
 
-        // Critical-chain parent: the latest `After=` dependency that precedes us.
-        for u in &visible {
-            let me = lay.index[&u.name];
+        // Critical-chain parent: the latest `After=` dependency (of any
+        // member) that precedes us.
+        for (ei, e) in ents.iter().enumerate() {
+            let me = ei + 1;
             let my_key = keys[me].as_ref().unwrap();
-            let parent = u
-                .deps
-                .after
+            let parent = e
+                .members
                 .iter()
+                .flat_map(|m| &m.deps.after)
                 .filter_map(|d| {
                     let idx = *lay.index.get(d)?;
                     let k = keys[idx].as_ref().unwrap();
-                    (k < my_key).then_some((k, idx))
+                    (idx != me && k < my_key).then_some((k, idx))
                 })
                 .max()
                 .map(|(_, idx)| idx)
@@ -238,9 +304,9 @@ impl Layout {
 
         // Extra (non-tree) dependency edges.
         let mut seen = BTreeSet::new();
-        for u in &visible {
-            let me = lay.index[&u.name];
-            for d in u.deps.requires.iter().chain(&u.deps.wants).chain(&u.deps.binds_to) {
+        for (ei, e) in ents.iter().enumerate() {
+            let me = ei + 1;
+            for d in e.members.iter().flat_map(|m| m.deps.requires.iter().chain(&m.deps.wants).chain(&m.deps.binds_to)) {
                 if let Some(&o) = lay.index.get(d) {
                     let tree = lay.nodes[me].parent == Some(o) || lay.nodes[o].parent == Some(me);
                     if !tree && o != me && seen.insert((me.min(o), me.max(o))) {
@@ -250,11 +316,12 @@ impl Layout {
             }
         }
 
-        // Processes of each unit (the renderer places them around it).
+        // Processes of each unit (the renderer places them around its node).
         if opts.processes {
-            for u in &visible {
-                let unit = lay.index[&u.name];
-                lay.procs.extend(u.processes.iter().map(|p| ProcNode { unit, pid: p.pid, comm: p.comm.clone() }));
+            for (ei, e) in ents.iter().enumerate() {
+                for m in &e.members {
+                    lay.procs.extend(m.processes.iter().map(|p| ProcNode { unit: ei + 1, pid: p.pid, comm: p.comm.clone() }));
+                }
             }
         }
 
@@ -296,6 +363,48 @@ mod tests {
 
     fn sample() -> BootTimeline {
         BootTimeline::from_json(include_str!("../../../samples/mbair-boot.json")).unwrap()
+    }
+
+    #[test]
+    fn template_names() {
+        assert_eq!(template_of("modprobe@drm.service").as_deref(), Some("modprobe@.service"));
+        assert_eq!(template_of("getty@tty1.service").as_deref(), Some("getty@.service"));
+        assert_eq!(template_of("modprobe@.service"), None, "the template itself");
+        assert_eq!(template_of("sysinit.target"), None);
+        assert_eq!(template_of("-.mount"), None);
+    }
+
+    #[test]
+    fn template_instances_share_a_node_unless_they_failed() {
+        let mut tl = BootTimeline::default();
+        let mut add = |name: &str, t: Usec, state: UnitState, after: &[&str]| {
+            let mut u = Unit::new(name);
+            u.state = state;
+            u.t_activating = Some(t);
+            if state != UnitState::Failed {
+                u.t_active = Some(t + 10);
+            }
+            u.deps.after = after.iter().map(|s| s.to_string()).collect();
+            tl.units.insert(name.into(), u);
+        };
+        add("modprobe@drm.service", 100, UnitState::Active, &[]);
+        add("modprobe@fuse.service", 120, UnitState::Active, &[]);
+        add("modprobe@loop.service", 130, UnitState::Failed, &[]);
+        add("getty@tty1.service", 140, UnitState::Active, &[]);
+        add("sysinit.target", 200, UnitState::Active, &["modprobe@drm.service", "modprobe@fuse.service"]);
+        tl.synthesize_events();
+        let lay = Layout::compute(&tl, &LayoutOptions::default());
+
+        let g = lay.index["modprobe@.service"];
+        assert_eq!(lay.nodes[g].units, ["modprobe@drm.service", "modprobe@fuse.service"]);
+        assert_eq!(lay.index["modprobe@drm.service"], g);
+        assert_eq!(lay.index["modprobe@fuse.service"], g);
+        // The failed instance and a lone instance keep their own nodes.
+        assert_eq!(lay.nodes[lay.index["modprobe@loop.service"]].units, ["modprobe@loop.service"]);
+        assert_eq!(lay.nodes[lay.index["getty@tty1.service"]].units, ["getty@tty1.service"]);
+        // Dependencies on members point at the group.
+        assert_eq!(lay.nodes[lay.index["sysinit.target"]].parent, Some(g));
+        assert_eq!(lay.nodes.len(), 1 + 4);
     }
 
     #[test]

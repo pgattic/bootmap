@@ -29,6 +29,27 @@ critical-chain` uses). The simulation starts from a radial tree built on
 those parents, so it settles in a couple of seconds and comes out the same
 every time.
 
+**Labels** follow what is happening rather than naming everything:
+
+- failed units, and units starting or stopping;
+- a unit that just finished starting, for about a second and a half, fading out;
+- once the boot has finished, the slowest units;
+- targets, the boot's milestones;
+- in the viewer, the hovered unit and its neighbors.
+
+Everything else is a dot; hover it in the viewer for its name and details.
+
+**Template instances** share one node: two or more of `modprobe@drm.service`,
+`modprobe@fuse.service`, ... become `modprobe@ ×2`. The grouping follows
+systemd's own `name@instance.type` naming, so it is exact. An instance that
+failed keeps a node of its own, so a group never hides a problem. Hovering a
+group lists its instances.
+
+**Size.** Text, dots and lines keep the same physical size on any screen. At
+boot the scale comes from the size the display reports in millimetres
+(screens that report none fall back to their height); in the viewer, from
+the desktop's scale. `bootmap render` takes `--ui-scale`.
+
 Colors show state:
 
 - grey: pending

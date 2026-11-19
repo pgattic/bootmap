@@ -46,6 +46,8 @@ struct Head {
     db: Option<DumbBuffer>,
     fb: framebuffer::Handle,
     size: (u32, u32),
+    /// Physical size in millimetres, as the display reports it (0 if unknown).
+    mm: (u32, u32),
     /// The picture scaled to this head, when its size differs from the primary's.
     scaled: Option<Pixmap>,
     dirty_warned: bool,
@@ -83,6 +85,7 @@ impl Head {
             db: Some(db),
             fb,
             size,
+            mm: info.size().unwrap_or((0, 0)),
             scaled: None,
             dirty_warned: false,
         })
@@ -260,11 +263,25 @@ impl Display {
         // Primary first: the built-in panel, else the largest.
         heads.sort_by_key(|h| (!h.internal, std::cmp::Reverse(h.size.0 as u64 * h.size.1 as u64)));
         let p = &heads[0];
-        eprintln!("bootmap: drawing on {} at {}x{} ({})", p.card.path.display(), p.size.0, p.size.1, p.name);
+        eprintln!("bootmap: drawing on {} at {}x{} ({}, {}x{} mm)", p.card.path.display(), p.size.0, p.size.1, p.name, p.mm.0, p.mm.1);
         for h in &heads[1..] {
             eprintln!("bootmap: mirroring to {} at {}x{} on {}", h.name, h.size.0, h.size.1, h.card.path.display());
         }
         Some(Self { heads })
+    }
+
+    /// Device pixels per layout pixel for the primary output: its density
+    /// relative to a ~96 dpi screen. Displays that report no physical size
+    /// (VMs, some projectors) fall back to their height relative to 1080.
+    pub fn ui_scale(&self) -> f32 {
+        let p = &self.heads[0];
+        let scale = if p.mm.0 > 0 && p.mm.1 > 0 {
+            let dpi = p.size.0 as f32 / (p.mm.0 as f32 / 25.4);
+            dpi / 96.0
+        } else {
+            p.size.1 as f32 / 1080.0
+        };
+        scale.clamp(1.0, 4.0)
     }
 
     /// Size to render at.

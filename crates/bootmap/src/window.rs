@@ -189,6 +189,8 @@ impl App {
     fn draw(&mut self) {
         let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else { return };
         let size = window.inner_size();
+        // The desktop's scale for this window (follows it across monitors).
+        self.scene.renderer.ui_scale = window.scale_factor() as f32;
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
         if surface.resize(w, h).is_err() {
             return;

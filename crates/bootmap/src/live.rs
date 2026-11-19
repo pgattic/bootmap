@@ -82,7 +82,9 @@ impl Source {
                 Ok(LiveMsg::Event(ev)) => {
                     let first_start = self.tl.units.get(&ev.unit).is_none_or(|u| u.t_activating.is_none());
                     // Timestamps feed the layout ordering; re-layout on first start.
-                    structural |= self.tl.apply(ev) && first_start;
+                    // A unit that fails leaves its template group: re-lay out then too.
+                    let failed = ev.state == bootmap_core::UnitState::Failed;
+                    structural |= self.tl.apply(ev) && (first_start || failed);
                 }
                 Ok(LiveMsg::Finished(_)) if self.tl.phases.in_initrd => {}
                 Ok(LiveMsg::Finished(ph)) => {
@@ -124,6 +126,8 @@ impl Source {
         match &self.mode {
             Mode::Replay { speed, base, started, paused_at } => paused_at.unwrap_or_else(|| {
                 let (_, end) = self.tl.span();
+                // Run on past the last event until the picture has settled.
+                let end = end + bootmap_core::render::SETTLE_USEC;
                 (base + (started.elapsed().as_secs_f64() * *speed as f64 * 1e6) as Usec).min(end)
             }),
             Mode::Live { .. } => monotonic_now(),
@@ -163,6 +167,7 @@ impl Source {
     pub fn seek(&mut self, secs: f32) {
         let now = self.now();
         let (start, end) = self.tl.span();
+        let end = end + bootmap_core::render::SETTLE_USEC;
         let lo = start.saturating_sub(200_000);
         if let Mode::Replay { base, started, paused_at, .. } = &mut self.mode {
             let t = (now as i64 + (secs * 1e6) as i64).clamp(lo as i64, end as i64) as Usec;
@@ -259,7 +264,8 @@ impl Scene {
     }
 
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32) -> Option<usize> {
-        self.frame_desc(None).pick(w, h, px, py)
+        // Pointer reach scales with the screen, like the dots.
+        self.frame_desc(None).pick(w, h, px, py, 14.0 * self.renderer.ui_scale)
     }
 
     pub fn node_name(&self, i: usize) -> String {
@@ -299,7 +305,8 @@ impl Scene {
         if !self.auto_fit {
             return;
         }
-        let margin = 0.05 * w.min(h) + if self.renderer.opts.labels { 70.0 } else { 20.0 };
+        let label_room = if self.renderer.opts.labels { 70.0 } else { 20.0 };
+        let margin = 0.05 * w.min(h) + label_room * self.renderer.ui_scale;
         let target = Camera::fit(&self.pos, w, h, margin);
         self.cam = if self.snap { target } else { self.cam.lerp(target, 0.08) };
         self.snap = false;

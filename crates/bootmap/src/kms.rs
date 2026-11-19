@@ -310,6 +310,7 @@ pub fn run(sig: Signals, mut source: Source, graph: GraphArgs, opts: BootOptions
             if let Some(d) = search.try_open() {
                 let (w, h) = d.size();
                 pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
+                scene.renderer.ui_scale = d.ui_scale();
                 lost_at = None;
                 match &mut console {
                     Some(c) => c.display = Some(d),

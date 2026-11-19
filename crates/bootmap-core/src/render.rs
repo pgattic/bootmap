@@ -117,13 +117,13 @@ pub struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    /// Index of the node under pixel (px, py), if any.
-    pub fn pick(&self, w: f32, h: f32, px: f32, py: f32) -> Option<usize> {
+    /// Index of the node within `reach` pixels of (px, py), if any.
+    pub fn pick(&self, w: f32, h: f32, px: f32, py: f32, reach: f32) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
         for (i, &(x, y)) in self.pos.iter().enumerate().skip(1) {
             let (sx, sy) = self.cam.to_px(w, h, x, y);
             let d2 = (sx - px).powi(2) + (sy - py).powi(2);
-            if d2 < 14.0 * 14.0 && best.is_none_or(|(b, _)| d2 < b) {
+            if d2 < reach * reach && best.is_none_or(|(b, _)| d2 < b) {
                 best = Some((d2, i));
             }
         }
@@ -131,6 +131,46 @@ impl Frame<'_> {
     }
 }
 
+/// How much a state stands out: a group shows the most notable state among
+/// its members.
+fn notability(v: Visual) -> u8 {
+    match v {
+        Visual::Ghost => 0,
+        Visual::Exited => 1,
+        Visual::Active => 2,
+        Visual::Activating => 3,
+        Visual::Stopping => 4,
+        Visual::Failed => 5,
+    }
+}
+
+/// Label for a node: the unit's short name, or a group's template and count.
+pub fn node_label(n: &crate::layout::Node) -> String {
+    match n.units.len() {
+        0 | 1 => short_name(&n.name),
+        k => format!("{} ×{k}", short_name(&n.name)),
+    }
+}
+
+/// A label stays fully visible this long after its unit finished starting...
+const LABEL_HOLD: f32 = 0.9;
+/// ...and is gone this long after.
+pub const LABEL_FADE: f32 = 1.5;
+
+/// Size of the shared UI pieces at a given screen scale.
+struct Sizes {
+    big: f32,
+    small: f32,
+    line: f32,
+    margin: f32,
+}
+
+impl Sizes {
+    fn at(s: f32) -> Self {
+        let small = 13.5 * s;
+        Self { big: 22.0 * s, small, line: small * 1.45, margin: 18.0 * s }
+    }
+}
 
 fn label_color(v: Visual, is_target: bool) -> Rgb {
     match v {
@@ -166,6 +206,10 @@ pub struct Renderer {
     pub opts: RenderOptions,
     /// A passphrase request to draw over everything else.
     pub prompt: Option<Prompt>,
+    /// Device pixels per layout pixel: text, dots and lines are sized for a
+    /// ~96 dpi screen and multiplied by this, so they keep their physical
+    /// size on dense screens. Set by the backend from the display.
+    pub ui_scale: f32,
 }
 
 /// A passphrase request, as shown to the user.
@@ -205,10 +249,82 @@ pub fn visuals_at(tl: &BootTimeline, t: Usec, shutdown_from: Option<Usec>) -> Ha
     m
 }
 
+/// The slowest units to start, longest first (not bootmap's own units: its
+/// "start" is the wait for a display, and bootmap-quit's the handover).
+fn slowest(lay: &Layout, tl: &BootTimeline) -> Vec<(String, Usec)> {
+    let mut slow: Vec<(String, Usec)> = lay
+        .nodes
+        .iter()
+        .flat_map(|n| &n.units)
+        .filter_map(|u| Some((u.clone(), tl.units.get(u)?.duration()?)))
+        .filter(|(name, d)| *d > 0 && !name.starts_with("bootmap"))
+        .collect();
+    slow.sort_by_key(|(_, d)| std::cmp::Reverse(*d));
+    slow
+}
+
+/// Which nodes get a label right now, by priority (lower sorts first), with
+/// their opacity. Only what tells the story is labelled:
+/// - while hovering: the hovered unit and its neighbors, nothing else;
+/// - failures, and units starting or stopping;
+/// - a unit that just finished starting, for a moment, fading out;
+/// - once the boot has finished, the slowest units;
+/// - targets, the boot's milestones.
+///
+/// Everything else stays a dot.
+fn label_candidates(
+    f: &Frame,
+    tl: &BootTimeline,
+    t: Usec,
+    node_vis: &dyn Fn(usize) -> Visual,
+    focus: &Option<HashSet<usize>>,
+) -> Vec<(i64, usize, f32)> {
+    let lay = f.lay;
+    let mut changed: HashMap<&str, Usec> = HashMap::new();
+    for e in tl.events.iter().take_while(|e| e.t <= t) {
+        changed.insert(e.unit.as_str(), e.t);
+    }
+    let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
+    let slow: HashSet<usize> = if finished {
+        slowest(lay, tl).iter().take(8).filter_map(|(u, _)| lay.index.get(u).copied()).collect()
+    } else {
+        HashSet::new()
+    };
+    let mut out = vec![];
+    for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+        let v = node_vis(i);
+        let since = n
+            .units
+            .iter()
+            .filter_map(|u| changed.get(u.as_str()))
+            .max()
+            .map(|&c| t.saturating_sub(c) as f32 / 1e6);
+        let is_target = n.kind == Some(UnitKind::Target);
+        let (p, alpha) = match focus {
+            Some(set) if f.hover == Some(i) => (100_000, 1.0),
+            Some(set) if set.contains(&i) => (10_000, 1.0),
+            Some(_) => continue,
+            None if v == Visual::Failed => (5_000, 1.0),
+            None if matches!(v, Visual::Activating | Visual::Stopping) => (4_000, 1.0),
+            None if matches!(v, Visual::Active | Visual::Exited) && since.is_some_and(|d| d < LABEL_FADE) => {
+                let d = since.unwrap_or(0.0);
+                (3_000, if d <= LABEL_HOLD { 1.0 } else { 1.0 - (d - LABEL_HOLD) / (LABEL_FADE - LABEL_HOLD) })
+            }
+            // Once finished, the slowest units explain the boot: they win over targets.
+            None if slow.contains(&i) => (2_500, 1.0),
+            None if is_target && v != Visual::Ghost => (2_000, 1.0),
+            None => continue,
+        };
+        // Among equals, busier nodes first.
+        out.push((-(p + lay.degree(i) as i64), i, alpha));
+    }
+    out
+}
+
 impl Renderer {
     pub fn new(opts: RenderOptions) -> Self {
         let font = Font::from_bytes(FONT_BYTES, FontSettings::default()).expect("bundled font parses");
-        Self { font, text_cache: HashMap::new(), opts, prompt: None }
+        Self { font, text_cache: HashMap::new(), opts, prompt: None, ui_scale: 1.0 }
     }
 
     /// Rasterize a single line of text into a cached pixmap.
@@ -225,6 +341,11 @@ impl Renderer {
     }
 
     fn draw_text(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, px: f32, c: Rgb) -> f32 {
+        self.draw_text_faded(pm, s, x, y, px, c, 1.0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_faded(&mut self, pm: &mut Pixmap, s: &str, x: f32, y: f32, px: f32, c: Rgb, opacity: f32) -> f32 {
         let Some(t) = self.text(s, px, c) else { return 0.0 };
         let w = t.width() as f32;
         let t = t.clone();
@@ -232,7 +353,7 @@ impl Renderer {
             0,
             0,
             t.as_ref(),
-            &PixmapPaint::default(),
+            &PixmapPaint { opacity, ..Default::default() },
             Transform::from_translate(x.round(), (y - px).round()),
             None,
         );
@@ -251,11 +372,17 @@ impl Renderer {
             let (x, y) = f.pos.get(i).copied().unwrap_or((0.0, 0.0));
             cam.to_px(w, h, x, y)
         };
+        let s = self.ui_scale;
         let node_vis = |i: usize| -> Visual {
             if i == ROOT {
                 return Visual::Active;
             }
-            *vis.get(lay.nodes[i].name.as_str()).unwrap_or(&Visual::Ghost)
+            lay.nodes[i]
+                .units
+                .iter()
+                .map(|u| *vis.get(u.as_str()).unwrap_or(&Visual::Ghost))
+                .max_by_key(|v| notability(*v))
+                .unwrap_or(Visual::Ghost)
         };
         // Hover focus: the hovered node and its neighbors stay bright.
         let focus: Option<HashSet<usize>> = f.hover.map(|h| {
@@ -291,14 +418,14 @@ impl Renderer {
                 pb.move_to(x0, y0);
                 pb.line_to(x1, y1);
             }
-            let s = Stroke { width: 0.6, ..Default::default() };
+            let stroke = Stroke { width: 0.6 * s, ..Default::default() };
             let base = if focus.is_some() { 0.03 } else { 0.10 };
             if let Some(p) = faint.finish() {
-                pm.stroke_path(&p, &paint(MUTED, base), &s, Transform::identity(), None);
+                pm.stroke_path(&p, &paint(MUTED, base), &stroke, Transform::identity(), None);
             }
             if let Some(p) = lit.finish() {
-                let s = Stroke { width: 1.0, ..Default::default() };
-                pm.stroke_path(&p, &paint(MUTED, 0.55), &s, Transform::identity(), None);
+                let stroke = Stroke { width: 1.0 * s, ..Default::default() };
+                pm.stroke_path(&p, &paint(MUTED, 0.55), &stroke, Transform::identity(), None);
             }
         }
 
@@ -327,8 +454,8 @@ impl Renderer {
                 _ => (a, wdt),
             };
             if let Some(p) = pb.finish() {
-                let s = Stroke { width: wdt, ..Default::default() };
-                pm.stroke_path(&p, &paint(c, a), &s, Transform::identity(), None);
+                let stroke = Stroke { width: wdt * s, ..Default::default() };
+                pm.stroke_path(&p, &paint(c, a), &stroke, Transform::identity(), None);
             }
         }
 
@@ -345,17 +472,17 @@ impl Renderer {
             let j = siblings.iter().position(|&j| j == pi).unwrap_or(0) as f32;
             let out = (y0 - oy).atan2(x0 - ox);
             let angle = out + (j - (k - 1.0) / 2.0) * 0.6;
-            let d = (cam.scale * 0.22).clamp(9.0, 22.0);
+            let d = (cam.scale * 0.22).clamp(9.0 * s, 22.0 * s);
             let (x, y) = (x0 + d * angle.cos(), y0 + d * angle.sin());
             let a = dim(p.unit);
             let mut pb = PathBuilder::new();
             pb.move_to(x0, y0);
             pb.line_to(x, y);
             if let Some(l) = pb.finish() {
-                let s = Stroke { width: 0.6, ..Default::default() };
-                pm.stroke_path(&l, &paint(PROC, 0.35 * a), &s, Transform::identity(), None);
+                let stroke = Stroke { width: 0.6 * s, ..Default::default() };
+                pm.stroke_path(&l, &paint(PROC, 0.35 * a), &stroke, Transform::identity(), None);
             }
-            if let Some(c) = PathBuilder::from_circle(x, y, 1.8) {
+            if let Some(c) = PathBuilder::from_circle(x, y, 1.8 * s) {
                 pm.fill_path(&c, &paint(PROC, 0.85 * a), FillRule::Winding, Transform::identity(), None);
             }
         }
@@ -368,7 +495,7 @@ impl Renderer {
             let (x, y) = px(i);
             let is_target = n.kind == Some(UnitKind::Target);
             // Size by connectedness; targets a little larger.
-            let base = (2.2 + 0.85 * (lay.degree(i) as f32).sqrt()) * if is_target { 1.25 } else { 1.0 };
+            let base = (2.2 + 0.85 * (lay.degree(i) as f32).sqrt()) * if is_target { 1.25 } else { 1.0 } * s;
             let (c, a, rad) = match v {
                 Visual::Ghost => (GHOST, 0.8, base * 0.6),
                 Visual::Activating | Visual::Stopping => (ACTIVATING, 1.0, base * (1.0 + 0.35 * pulse)),
@@ -385,15 +512,15 @@ impl Renderer {
                 }
             }
             if f.hover == Some(i) {
-                if let Some(ring) = PathBuilder::from_circle(x, y, rad + 4.0) {
-                    let s = Stroke { width: 1.5, ..Default::default() };
-                    pm.stroke_path(&ring, &paint(TEXT, 0.9), &s, Transform::identity(), None);
+                if let Some(ring) = PathBuilder::from_circle(x, y, rad + 4.0 * s) {
+                    let stroke = Stroke { width: 1.5 * s, ..Default::default() };
+                    pm.stroke_path(&ring, &paint(TEXT, 0.9), &stroke, Transform::identity(), None);
                 }
             }
             if let Some(dot) = PathBuilder::from_circle(x, y, rad) {
                 if v == Visual::Exited {
-                    let s = Stroke { width: 1.2, ..Default::default() };
-                    pm.stroke_path(&dot, &paint(c, a), &s, Transform::identity(), None);
+                    let stroke = Stroke { width: 1.2 * s, ..Default::default() };
+                    pm.stroke_path(&dot, &paint(c, a), &stroke, Transform::identity(), None);
                 } else {
                     pm.fill_path(&dot, &paint(c, a), FillRule::Winding, Transform::identity(), None);
                 }
@@ -401,7 +528,7 @@ impl Renderer {
         }
 
         // Center node.
-        let core_r = (cam.scale * 0.22).clamp(6.0, 26.0);
+        let core_r = (cam.scale * 0.22).clamp(6.0 * s, 26.0 * s);
         if let Some(c) = PathBuilder::from_circle(ox, oy, core_r * 1.8) {
             pm.fill_path(&c, &paint(TARGET, 0.10), FillRule::Winding, Transform::identity(), None);
         }
@@ -410,7 +537,8 @@ impl Renderer {
         }
 
         if self.opts.labels {
-            self.labels(pm, f, &node_vis, &radii, &focus, w, h);
+            let cands = label_candidates(f, tl, t, &node_vis, &focus);
+            self.labels(pm, f, cands, &node_vis, &radii, w, h);
         }
 
         if self.opts.hud {
@@ -419,7 +547,7 @@ impl Renderer {
                 None => self.hud(pm, lay, tl, t, &vis),
             }
             if let Some(hv) = f.hover {
-                self.info_panel(pm, lay, tl, hv, node_vis(hv), t);
+                self.info_panel(pm, lay, tl, hv, node_vis(hv), t, &vis);
             }
         }
         if let Some(prompt) = self.prompt.clone() {
@@ -430,7 +558,8 @@ impl Renderer {
     /// The passphrase request: dims the graph and draws a centered panel.
     fn draw_prompt(&mut self, pm: &mut Pixmap, prompt: &Prompt, wall: f32) {
         let (w, h) = (pm.width() as f32, pm.height() as f32);
-        let px = (h / 40.0).clamp(14.0, 28.0) * 0.8;
+        let s = self.ui_scale;
+        let px = 18.0 * s;
         let line = px * 1.5;
         let pad = px * 1.4;
         if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
@@ -450,7 +579,7 @@ impl Renderer {
         if let Some(r) = Rect::from_xywh(bx, by, bw, bh) {
             pm.fill_rect(r, &paint(Rgb(0x16, 0x19, 0x22), 0.97), Transform::identity(), None);
         }
-        if let Some(r) = Rect::from_xywh(bx, by, bw, 2.0) {
+        if let Some(r) = Rect::from_xywh(bx, by, bw, 2.0 * s) {
             pm.fill_rect(r, &paint(ACTIVATING, 1.0), Transform::identity(), None);
         }
         let x = bx + pad;
@@ -470,7 +599,7 @@ impl Renderer {
         }
         let end = x + px * 0.5 + self.draw_text(pm, shown, x + px * 0.5, y + field_h * 0.5 + px * 0.38, px, TEXT);
         if (wall * 2.0) as i64 % 2 == 0 {
-            if let Some(r) = Rect::from_xywh(end + 2.0, y + field_h * 0.2, 2.0, field_h * 0.6) {
+            if let Some(r) = Rect::from_xywh(end + 2.0 * s, y + field_h * 0.2, 2.0 * s, field_h * 0.6) {
                 pm.fill_rect(r, &paint(TEXT, 0.9), Transform::identity(), None);
             }
         }
@@ -482,59 +611,34 @@ impl Renderer {
         self.draw_text(pm, hint, x, y, small, MUTED);
     }
 
-    /// Horizontal labels, placed by priority, skipping overlaps.
+    /// Horizontal labels, in priority order, skipping any that would overlap
+    /// one already placed (the hovered unit's label is always placed).
     #[allow(clippy::too_many_arguments)]
     fn labels(
         &mut self,
         pm: &mut Pixmap,
         f: &Frame,
+        mut cands: Vec<(i64, usize, f32)>,
         node_vis: &dyn Fn(usize) -> Visual,
         radii: &[f32],
-        focus: &Option<HashSet<usize>>,
         w: f32,
         h: f32,
     ) {
-        let lay = f.lay;
-        let px = (f.cam.scale * 0.16).clamp(9.5, 14.0);
-        // Priority: hover focus, activating, failed, targets, then busiest nodes.
-        let mut cand: Vec<(i64, usize)> = vec![];
-        for (i, n) in lay.nodes.iter().enumerate().skip(1) {
-            let v = node_vis(i);
-            let in_focus = focus.as_ref().map(|s| s.contains(&i));
-            if in_focus == Some(false) || (v == Visual::Ghost && in_focus.is_none()) {
-                continue;
-            }
-            let is_target = n.kind == Some(UnitKind::Target);
-            let mut p = lay.degree(i) as i64;
-            if is_target {
-                p += 1000;
-            }
-            if v == Visual::Failed {
-                p += 3000;
-            }
-            if matches!(v, Visual::Activating | Visual::Stopping) {
-                p += 4000;
-            }
-            if in_focus == Some(true) {
-                p += 10_000;
-            }
-            if f.hover == Some(i) {
-                p += 100_000;
-            }
-            cand.push((-p, i));
-        }
-        cand.sort();
+        let s = self.ui_scale;
+        let px = 12.5 * s;
+        cands.sort_by_key(|c| c.0);
         let mut placed: Vec<(f32, f32, f32, f32)> = vec![];
-        for (_, i) in cand {
-            let n = &lay.nodes[i];
+        for (_, i, alpha) in cands {
+            let n = &f.lay.nodes[i];
             let v = node_vis(i);
             let is_target = n.kind == Some(UnitKind::Target);
-            let size = if f.hover == Some(i) { px * 1.2 } else { px };
-            let name = short_name(&n.name);
+            let size = if f.hover == Some(i) { px * 1.15 } else { px };
+            let name = node_label(n);
             let tw = self.text(&name, size, TEXT).map(|p| p.width() as f32).unwrap_or(0.0);
             let (x, y) = f.cam.to_px(w, h, f.pos[i].0, f.pos[i].1);
-            let lx = x + radii[i] + 4.0;
-            let rect = (lx - 2.0, y - size * 0.7, lx + tw + 2.0, y + size * 0.5);
+            let lx = x + radii[i] + 4.0 * s;
+            let pad = 2.0 * s;
+            let rect = (lx - pad, y - size * 0.7, lx + tw + pad, y + size * 0.5);
             if rect.2 < 0.0 || rect.0 > w || rect.3 < 0.0 || rect.1 > h {
                 continue;
             }
@@ -544,82 +648,137 @@ impl Renderer {
             }
             placed.push(rect);
             let c = if f.hover == Some(i) { TEXT } else { label_color(v, is_target) };
-            self.draw_text(pm, &name, lx, y + size * 0.35, size, c);
+            self.draw_text_faded(pm, &name, lx, y + size * 0.35, size, c, alpha);
         }
     }
 
-    /// Details of the hovered unit, bottom right.
-    fn info_panel(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, i: usize, v: Visual, t: Usec) {
+    /// Details of the hovered unit (or group), bottom right.
+    #[allow(clippy::too_many_arguments)]
+    fn info_panel(
+        &mut self,
+        pm: &mut Pixmap,
+        lay: &Layout,
+        tl: &BootTimeline,
+        i: usize,
+        v: Visual,
+        t: Usec,
+        vis: &HashMap<&str, Visual>,
+    ) {
         let (w, h) = (pm.width() as f32, pm.height() as f32);
-        let small = (h / 40.0).clamp(14.0, 28.0) * 0.62;
+        let s = self.ui_scale;
+        let small = Sizes::at(s).small;
         let line = small * 1.45;
-        let name = &lay.nodes[i].name;
-        let mut lines: Vec<(String, Rgb)> = vec![(name.clone(), TEXT)];
-        if let Some(u) = tl.units.get(name) {
+        let node = &lay.nodes[i];
+        let state_word = |v: Visual| match v {
+            Visual::Ghost => "pending",
+            Visual::Activating => "activating",
+            Visual::Stopping => "stopping",
+            Visual::Active => "active",
+            Visual::Exited => "exited",
+            Visual::Failed => "failed",
+        };
+        let mut lines: Vec<(String, Rgb)> = vec![];
+        if node.units.len() > 1 {
+            // A group: what it is, then its instances and their states.
+            lines.push((node_label(node), TEXT));
+            lines.push((format!("instances of {}", node.name), MUTED));
+            const SHOWN: usize = 8;
+            for u in node.units.iter().take(SHOWN) {
+                let uv = *vis.get(u.as_str()).unwrap_or(&Visual::Ghost);
+                let instance = u.split_once('@').map_or(u.as_str(), |(_, rest)| rest.rsplit_once('.').map_or(rest, |(i, _)| i));
+                let took = tl.units.get(u).and_then(|u| u.duration()).map(|d| format!(" · {:.3}s", d as f32 / 1e6)).unwrap_or_default();
+                lines.push((format!("  {instance}  {}{took}", state_word(uv)), label_color(uv, false)));
+            }
+            if node.units.len() > SHOWN {
+                lines.push((format!("  and {} more", node.units.len() - SHOWN), MUTED));
+            }
+        } else {
+            lines.push((node.name.clone(), TEXT));
+        }
+        if let Some(u) = tl.units.get(&node.name).filter(|_| node.units.len() == 1) {
             if !u.description.is_empty() {
                 lines.push((u.description.clone(), MUTED));
             }
             let (start, _) = tl.span();
-            let state = match v {
-                Visual::Ghost => "pending",
-                Visual::Activating => "activating",
-                Visual::Stopping => "stopping",
-                Visual::Active => "active",
-                Visual::Exited => "exited",
-                Visual::Failed => "failed",
-            };
-            let mut s = state.to_string();
+            let mut st = state_word(v).to_string();
             if let Some(a) = u.t_activating {
-                s += &format!(" · started +{:.3}s", a.saturating_sub(start) as f32 / 1e6);
+                st += &format!(" · started +{:.3}s", a.saturating_sub(start) as f32 / 1e6);
             }
             match (u.duration(), v) {
-                (Some(d), Visual::Active | Visual::Exited | Visual::Failed) => s += &format!(" · took {:.3}s", d as f32 / 1e6),
+                (Some(d), Visual::Active | Visual::Exited | Visual::Failed) => st += &format!(" · took {:.3}s", d as f32 / 1e6),
                 (_, Visual::Activating) => {
-                    s += &format!(" · {:.2}s so far", t.saturating_sub(u.t_activating.unwrap_or(t)) as f32 / 1e6)
+                    st += &format!(" · {:.2}s so far", t.saturating_sub(u.t_activating.unwrap_or(t)) as f32 / 1e6)
                 }
                 _ => {}
             }
-            lines.push((s, label_color(v, false)));
-            if let Some(p) = lay.nodes[i].parent.filter(|&p| p != ROOT) {
-                lines.push((format!("after {}", lay.nodes[p].name), MUTED));
-            }
+            lines.push((st, label_color(v, false)));
             if !u.processes.is_empty() {
                 let procs: Vec<String> = u.processes.iter().map(|p| format!("{} ({})", p.comm, p.pid)).collect();
                 lines.push((procs.join(", "), PROC));
             }
         }
+        if let Some(p) = node.parent.filter(|&p| p != ROOT) {
+            lines.push((format!("after {}", node_label(&lay.nodes[p])), MUTED));
+        }
         lines.push((format!("{} connections", lay.degree(i)), MUTED));
         let tw = lines
             .iter()
-            .map(|(s, c)| self.text(s, small, *c).map(|p| p.width() as f32).unwrap_or(0.0))
+            .map(|(txt, c)| self.text(txt, small, *c).map(|p| p.width() as f32).unwrap_or(0.0))
             .fold(0.0, f32::max);
-        let bw = tw + 28.0;
-        let bh = lines.len() as f32 * line + 16.0;
-        let (bx, by) = (w - bw - 16.0, h - bh - 16.0);
+        let (pad, edge) = (14.0 * s, 16.0 * s);
+        let bw = (tw + 2.0 * pad).min(w - 2.0 * edge);
+        let bh = lines.len() as f32 * line + edge;
+        let (bx, by) = (w - bw - edge, h - bh - edge);
         if let Some(r) = Rect::from_xywh(bx, by, bw, bh) {
             pm.fill_rect(r, &paint(Rgb(0x16, 0x19, 0x22), 0.92), Transform::identity(), None);
         }
-        let mut y = by + 8.0 + small;
-        for (s, c) in lines {
-            self.draw_text(pm, &s, bx + 14.0, y, small, c);
+        let mut y = by + edge / 2.0 + small;
+        for (txt, c) in lines {
+            self.draw_text(pm, &txt, bx + pad, y, small, c);
             y += line;
+        }
+    }
+
+    /// The title line, top left; returns the y of the next line.
+    fn hud_title(&mut self, pm: &mut Pixmap, tl: &BootTimeline, z: &Sizes) -> f32 {
+        let title = self.opts.title.clone().unwrap_or_else(|| {
+            if tl.host.is_empty() { "bootmap".into() } else { format!("bootmap · {}", tl.host) }
+        });
+        let y = z.margin + z.big;
+        self.draw_text(pm, &title, z.margin, y, z.big, TEXT);
+        y + z.big * 1.25
+    }
+
+    /// One "dot  count  label" row; returns the y of the next row.
+    fn hud_count(&mut self, pm: &mut Pixmap, z: &Sizes, y: f32, n: usize, label: &str, c: Rgb) -> f32 {
+        let s = self.ui_scale;
+        if let Some(d) = PathBuilder::from_circle(z.margin + 4.0 * s, y - z.small * 0.35, 4.0 * s) {
+            pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+        }
+        self.draw_text(pm, &format!("{n:>4}  {label}"), z.margin + 14.0 * s, y, z.small, TEXT);
+        y + z.line
+    }
+
+    /// Colour legend, top right.
+    fn hud_legend(&mut self, pm: &mut Pixmap, z: &Sizes, entries: &[(&str, Rgb)]) {
+        let (w, s) = (pm.width() as f32, self.ui_scale);
+        let mut y = z.margin + z.small;
+        for &(label, c) in entries {
+            let tw = self.text(label, z.small, MUTED).map(|p| p.width() as f32).unwrap_or(0.0);
+            let x = w - z.margin - tw;
+            self.draw_text(pm, label, x, y, z.small, MUTED);
+            if let Some(d) = PathBuilder::from_circle(x - 10.0 * s, y - z.small * 0.35, 3.5 * s) {
+                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+            y += z.line;
         }
     }
 
     /// HUD for the shutdown view: what is still running and what is holding it up.
     fn hud_shutdown(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, t: Usec, vis: &HashMap<&str, Visual>, from: Usec) {
-        let (w, h) = (pm.width() as f32, pm.height() as f32);
-        let big = (h / 40.0).clamp(14.0, 28.0);
-        let small = (big * 0.62).max(10.0);
-        let line = small * 1.45;
-        let x = 18.0;
-        let mut y = 18.0 + big;
-
-        let title = self.opts.title.clone().unwrap_or_else(|| {
-            if tl.host.is_empty() { "bootmap".into() } else { format!("bootmap · {}", tl.host) }
-        });
-        self.draw_text(pm, &title, x, y, big, TEXT);
-        y += big * 1.25;
+        let z = Sizes::at(self.ui_scale);
+        let x = z.margin;
+        let mut y = self.hud_title(pm, tl, &z);
         // Which shutdown is it? The target with a queued job tells us.
         let queued = |name: &str| tl.units.get(name).is_some_and(|u| u.job || u.state == UnitState::Active);
         let what = if queued("reboot.target") || queued("kexec.target") || queued("soft-reboot.target") {
@@ -632,77 +791,48 @@ impl Renderer {
             "shutting down"
         };
         let status = format!("{what} +{:.1}s", t.saturating_sub(from) as f32 / 1e6);
-        self.draw_text(pm, &status, x, y, small * 1.15, ACTIVATING);
-        y += line * 1.2;
+        self.draw_text(pm, &status, x, y, z.small * 1.15, ACTIVATING);
+        y += z.line * 1.2;
 
-        let count = |want: &[Visual]| {
-            lay.nodes.iter().skip(1).filter(|n| vis.get(n.name.as_str()).is_some_and(|v| want.contains(v))).count()
-        };
+        let units: Vec<&str> = lay.nodes.iter().flat_map(|n| n.units.iter().map(|u| u.as_str())).collect();
+        let count = |want: &[Visual]| units.iter().filter(|u| vis.get(*u).is_some_and(|v| want.contains(v))).count();
         let running = count(&[Visual::Active, Visual::Activating]);
         let stopping = count(&[Visual::Stopping]);
-        let total = lay.nodes.len() - 1;
-        for (label, n, c) in [
-            ("running", running, ACTIVE),
-            ("stopping", stopping, ACTIVATING),
-            ("stopped", total - running - stopping, GHOST),
-        ] {
-            if let Some(d) = PathBuilder::from_circle(x + 4.0, y - small * 0.35, 4.0) {
-                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
-            }
-            self.draw_text(pm, &format!("{n:>4}  {label}"), x + 14.0, y, small, TEXT);
-            y += line;
-        }
+        y = self.hud_count(pm, &z, y, running, "running", ACTIVE);
+        y = self.hud_count(pm, &z, y, stopping, "stopping", ACTIVATING);
+        y = self.hud_count(pm, &z, y, units.len() - running - stopping, "stopped", GHOST);
 
         // Units being stopped right now, longest-waiting first.
         if stopping > 0 {
-            y += line * 0.5;
-            self.draw_text(pm, "stopping", x, y, small, MUTED);
-            y += line;
+            y += z.line * 0.5;
+            self.draw_text(pm, "stopping", x, y, z.small, MUTED);
+            y += z.line;
             let mut since: HashMap<&str, Usec> = HashMap::new();
             for e in tl.events.iter().filter(|e| e.state == UnitState::Deactivating && e.t <= t) {
                 since.insert(e.unit.as_str(), e.t);
             }
-            let mut ing: Vec<(&str, Usec)> = lay
-                .nodes
+            let mut ing: Vec<(&str, Usec)> = units
                 .iter()
-                .skip(1)
-                .filter(|n| vis.get(n.name.as_str()) == Some(&Visual::Stopping))
-                .filter_map(|n| Some((n.name.as_str(), *since.get(n.name.as_str())?)))
+                .filter(|u| vis.get(*u) == Some(&Visual::Stopping))
+                .filter_map(|u| Some((*u, *since.get(u)?)))
                 .collect();
             ing.sort_by_key(|(_, a)| *a);
             for (name, a) in ing.iter().take(8) {
-                let s = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
-                self.draw_text(pm, &s, x, y, small, ACTIVATING);
-                y += line;
+                let line = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
+                self.draw_text(pm, &line, x, y, z.small, ACTIVATING);
+                y += z.line;
             }
         }
 
-        // Legend, top right.
-        let mut ly = 18.0 + small;
-        for (label, c) in [("target", TARGET), ("running", ACTIVE), ("stopping", ACTIVATING), ("stopped", GHOST), ("process", PROC)] {
-            let tw = self.text(label, small, MUTED).map(|p| p.width() as f32).unwrap_or(0.0);
-            let lx = w - 18.0 - tw;
-            self.draw_text(pm, label, lx, ly, small, MUTED);
-            if let Some(d) = PathBuilder::from_circle(lx - 10.0, ly - small * 0.35, 3.5) {
-                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
-            }
-            ly += line;
-        }
+        self.hud_legend(pm, &z, &[("target", TARGET), ("running", ACTIVE), ("stopping", ACTIVATING), ("stopped", GHOST), ("process", PROC)]);
     }
 
     fn hud(&mut self, pm: &mut Pixmap, lay: &Layout, tl: &BootTimeline, t: Usec, vis: &HashMap<&str, Visual>) {
         let (w, h) = (pm.width() as f32, pm.height() as f32);
-        let big = (h / 40.0).clamp(14.0, 28.0);
-        let small = (big * 0.62).max(10.0);
-        let line = small * 1.45;
-        let x = 18.0;
-        let mut y = 18.0 + big;
-
-        let title = self.opts.title.clone().unwrap_or_else(|| {
-            if tl.host.is_empty() { "bootmap".into() } else { format!("bootmap · {}", tl.host) }
-        });
-        self.draw_text(pm, &title, x, y, big, TEXT);
-        y += big * 1.25;
+        let s = self.ui_scale;
+        let z = Sizes::at(s);
+        let x = z.margin;
+        let mut y = self.hud_title(pm, tl, &z);
         let (start, end) = tl.span();
         let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
         let ph = &tl.phases;
@@ -715,61 +845,43 @@ impl Renderer {
         } else {
             format!("userspace +{:.3}s", t.saturating_sub(ph.userspace) as f32 / 1e6)
         };
-        self.draw_text(pm, &status, x, y, small * 1.15, if finished { ACTIVE } else { ACTIVATING });
-        y += line * 1.2;
+        self.draw_text(pm, &status, x, y, z.small * 1.15, if finished { ACTIVE } else { ACTIVATING });
+        y += z.line * 1.2;
 
-        let count = |want: Visual| lay.nodes.iter().skip(1).filter(|n| vis.get(n.name.as_str()) == Some(&want)).count();
+        // Counts are of units: a group of five instances counts five.
+        let units: Vec<&str> = lay.nodes.iter().flat_map(|n| n.units.iter().map(|u| u.as_str())).collect();
+        let count = |want: Visual| units.iter().filter(|u| vis.get(*u) == Some(&want)).count();
         let (n_act, n_ing, n_ex, n_fail) =
             (count(Visual::Active), count(Visual::Activating), count(Visual::Exited), count(Visual::Failed));
-        let total = lay.nodes.len() - 1;
-        for (label, n, c) in [
-            ("active", n_act, ACTIVE),
-            ("activating", n_ing, ACTIVATING),
-            ("exited", n_ex, EXITED),
-            ("failed", n_fail, FAILED),
-            ("pending", total - n_act - n_ing - n_ex - n_fail, GHOST),
-        ] {
-            if let Some(d) = PathBuilder::from_circle(x + 4.0, y - small * 0.35, 4.0) {
-                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
-            }
-            self.draw_text(pm, &format!("{n:>4}  {label}"), x + 14.0, y, small, TEXT);
-            y += line;
-        }
+        y = self.hud_count(pm, &z, y, n_act, "active", ACTIVE);
+        y = self.hud_count(pm, &z, y, n_ing, "activating", ACTIVATING);
+        y = self.hud_count(pm, &z, y, n_ex, "exited", EXITED);
+        y = self.hud_count(pm, &z, y, n_fail, "failed", FAILED);
+        y = self.hud_count(pm, &z, y, units.len() - n_act - n_ing - n_ex - n_fail, "pending", GHOST);
 
         // In-flight jobs, or the slowest units once finished.
-        y += line * 0.5;
+        y += z.line * 0.5;
         if !finished && n_ing > 0 {
-            self.draw_text(pm, "starting", x, y, small, MUTED);
-            y += line;
-            let mut ing: Vec<(&str, Usec)> = lay
-                .nodes
+            self.draw_text(pm, "starting", x, y, z.small, MUTED);
+            y += z.line;
+            let mut ing: Vec<(&str, Usec)> = units
                 .iter()
-                .skip(1)
-                .filter(|n| vis.get(n.name.as_str()) == Some(&Visual::Activating))
-                .filter_map(|n| Some((n.name.as_str(), tl.units.get(&n.name)?.t_activating?)))
+                .filter(|u| vis.get(*u) == Some(&Visual::Activating))
+                .filter_map(|u| Some((*u, tl.units.get(*u)?.t_activating?)))
                 .collect();
             ing.sort_by_key(|(_, a)| *a);
             for (name, a) in ing.iter().take(8) {
-                let s = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
-                self.draw_text(pm, &s, x, y, small, ACTIVATING);
-                y += line;
+                let line = format!("{:>6.2}s  {}", t.saturating_sub(*a) as f32 / 1e6, short_name(name));
+                self.draw_text(pm, &line, x, y, z.small, ACTIVATING);
+                y += z.line;
             }
         } else if finished || t >= end {
-            self.draw_text(pm, "slowest", x, y, small, MUTED);
-            y += line;
-            let mut slow: Vec<(&str, Usec)> = lay
-                .nodes
-                .iter()
-                .skip(1)
-                .filter_map(|n| Some((n.name.as_str(), tl.units.get(&n.name)?.duration()?)))
-                // Not bootmap itself: its "start" is the wait for a display.
-                .filter(|(name, d)| *d > 0 && *name != "bootmap.service")
-                .collect();
-            slow.sort_by_key(|(_, d)| std::cmp::Reverse(*d));
-            for (name, d) in slow.iter().take(8) {
-                let s = format!("{:>6.3}s  {}", *d as f32 / 1e6, short_name(name));
-                self.draw_text(pm, &s, x, y, small, TEXT);
-                y += line;
+            self.draw_text(pm, "slowest", x, y, z.small, MUTED);
+            y += z.line;
+            for (name, d) in slowest(lay, tl).iter().take(8) {
+                let line = format!("{:>6.3}s  {}", *d as f32 / 1e6, short_name(name));
+                self.draw_text(pm, &line, x, y, z.small, TEXT);
+                y += z.line;
             }
         }
 
@@ -793,33 +905,27 @@ impl Renderer {
         if ph.finish > 0 {
             parts.push(format!("userspace {:.2}s", ph.finish.saturating_sub(ph.userspace) as f32 / 1e6));
         }
-        let footer = parts.join("   ·   ");
-        self.draw_text(pm, &footer, x, h - 16.0, small, MUTED);
+        let bottom = h - 16.0 * s;
+        self.draw_text(pm, &parts.join("   ·   "), x, bottom, z.small, MUTED);
 
         // Timeline scrubber.
         if end > start {
-            let bar_y = h - 16.0 - small - 10.0;
-            let bar_w = (w * 0.3).min(360.0);
+            let bar_y = bottom - z.small - 10.0 * s;
+            let bar_w = (w * 0.3).min(360.0 * s);
             let f = (t.saturating_sub(start) as f32 / (end - start) as f32).clamp(0.0, 1.0);
-            if let Some(r) = Rect::from_xywh(x, bar_y, bar_w, 3.0) {
+            if let Some(r) = Rect::from_xywh(x, bar_y, bar_w, 3.0 * s) {
                 pm.fill_rect(r, &paint(RING, 1.0), Transform::identity(), None);
             }
-            if let Some(r) = Rect::from_xywh(x, bar_y, (bar_w * f).max(1.0), 3.0) {
+            if let Some(r) = Rect::from_xywh(x, bar_y, (bar_w * f).max(1.0), 3.0 * s) {
                 pm.fill_rect(r, &paint(if finished { ACTIVE } else { ACTIVATING }, 1.0), Transform::identity(), None);
             }
         }
 
-        // Legend, top right.
-        let mut ly = 18.0 + small;
-        for (label, c) in [("target", TARGET), ("active", ACTIVE), ("activating", ACTIVATING), ("exited", EXITED), ("failed", FAILED), ("process", PROC)] {
-            let tw = self.text(label, small, MUTED).map(|p| p.width() as f32).unwrap_or(0.0);
-            let lx = w - 18.0 - tw;
-            self.draw_text(pm, label, lx, ly, small, MUTED);
-            if let Some(d) = PathBuilder::from_circle(lx - 10.0, ly - small * 0.35, 3.5) {
-                pm.fill_path(&d, &paint(c, 1.0), FillRule::Winding, Transform::identity(), None);
-            }
-            ly += line;
-        }
+        self.hud_legend(
+            pm,
+            &z,
+            &[("target", TARGET), ("active", ACTIVE), ("activating", ACTIVATING), ("exited", EXITED), ("failed", FAILED), ("process", PROC)],
+        );
     }
 }
 
@@ -872,3 +978,7 @@ fn rasterize_text(font: &Font, s: &str, px: f32, c: Rgb) -> Option<Pixmap> {
     }
     Some(pm)
 }
+
+/// How long past a recording's last event its picture keeps changing (labels
+/// still fading). A replay runs this much longer, so it ends settled.
+pub const SETTLE_USEC: Usec = (LABEL_FADE as Usec + 1) * 1_000_000;

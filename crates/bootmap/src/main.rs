@@ -84,7 +84,8 @@ enum Cmd {
     #[cfg(feature = "tools")]
     Render {
         input: PathBuf,
-        /// Seconds after userspace start (negative: into the initrd), or "end".
+        /// Seconds after userspace start (negative: into the initrd), or "end"
+        /// (the final picture, once it has settled).
         #[arg(long, default_value = "end", allow_hyphen_values = true)]
         at: String,
         #[arg(short, long, default_value = "bootmap.png")]
@@ -92,6 +93,10 @@ enum Cmd {
         /// Highlight a unit and its neighbors, as when hovering it in the viewer.
         #[arg(long)]
         highlight: Option<String>,
+        /// Size of text and dots relative to a ~96 dpi screen (default: the
+        /// image height relative to 1080).
+        #[arg(long)]
+        ui_scale: Option<f32>,
         #[arg(long, default_value = "1920x1080")]
         size: String,
         #[command(flatten)]
@@ -158,13 +163,14 @@ fn main() -> Result<()> {
             }
         }
         #[cfg(feature = "tools")]
-        Cmd::Render { input, at, output, size, highlight, graph } => {
+        Cmd::Render { input, at, output, size, highlight, ui_scale, graph } => {
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let t = parse_at(&tl, &at)?;
             let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph);
             scene.settle();
             scene.hover = highlight;
+            scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
             let mut pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
             scene.draw_at(&mut pm, t);
             if std::env::var_os("BOOTMAP_STATS").is_some() {
@@ -210,7 +216,8 @@ fn parse_size(s: &str) -> Result<(u32, u32)> {
 fn parse_at(tl: &BootTimeline, at: &str) -> Result<u64> {
     let (start, end) = tl.span();
     if at == "end" {
-        return Ok(end);
+        // The settled final picture, after the last labels have faded.
+        return Ok(end + bootmap_core::render::SETTLE_USEC);
     }
     let s: f64 = at.trim_end_matches('s').parse().context("--at must be seconds or \"end\"")?;
     // Relative to the userspace start; negative values reach back into the initrd.
