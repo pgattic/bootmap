@@ -1,4 +1,8 @@
 //! Data sources (replay / live) and the scene driver shared by all backends.
+//!
+//! Each frontend (viewer, boot mode, tools) is a cargo feature and uses part
+//! of this; a build with only some of them leaves the rest unused.
+#![cfg_attr(not(all(feature = "window", feature = "drm", feature = "tools")), allow(dead_code))]
 
 use crate::GraphArgs;
 use anyhow::Result;
@@ -141,7 +145,6 @@ impl Source {
         }
     }
 
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
     pub fn toggle_pause(&mut self) {
         let now = self.now();
         if let Mode::Replay { speed, base, started, paused_at } = &mut self.mode {
@@ -157,7 +160,6 @@ impl Source {
     }
 
     /// Jump by `secs` of boot time (replay only).
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
     pub fn seek(&mut self, secs: f32) {
         let now = self.now();
         let (start, end) = self.tl.span();
@@ -174,7 +176,6 @@ impl Source {
         }
     }
 
-    #[cfg_attr(not(feature = "window"), allow(dead_code))]
     pub fn restart(&mut self) {
         if let Mode::Replay { base, started, paused_at, .. } = &mut self.mode {
             let (start, _) = self.tl.span();

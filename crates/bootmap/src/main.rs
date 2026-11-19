@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+#[cfg(feature = "tools")]
+use anyhow::Context;
+use anyhow::Result;
 use bootmap_core::render::RenderOptions;
 use bootmap_core::systemd::{LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, LayoutOptions, UnitKind};
@@ -70,6 +72,7 @@ impl GraphArgs {
 #[derive(Subcommand)]
 enum Cmd {
     /// Snapshot the current boot to JSON.
+    #[cfg(feature = "tools")]
     Capture {
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -78,6 +81,7 @@ enum Cmd {
         slack: f64,
     },
     /// Render one frame of a recorded boot to PNG.
+    #[cfg(feature = "tools")]
     Render {
         input: PathBuf,
         /// Seconds after userspace start (negative: into the initrd), or "end".
@@ -133,6 +137,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
+        #[cfg(feature = "tools")]
         Cmd::Capture { output, slack } => {
             let mut sd = Systemd::connect()?;
             let mut tl = sd.snapshot()?;
@@ -152,6 +157,7 @@ fn main() -> Result<()> {
                 None => println!("{}", tl.to_json()),
             }
         }
+        #[cfg(feature = "tools")]
         Cmd::Render { input, at, output, size, highlight, graph } => {
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
@@ -194,11 +200,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "tools")]
 fn parse_size(s: &str) -> Result<(u32, u32)> {
     let (w, h) = s.split_once('x').context("size must look like 1920x1080")?;
     Ok((w.parse()?, h.parse()?))
 }
 
+#[cfg(feature = "tools")]
 fn parse_at(tl: &BootTimeline, at: &str) -> Result<u64> {
     let (start, end) = tl.span();
     if at == "end" {

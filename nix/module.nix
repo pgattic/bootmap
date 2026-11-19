@@ -81,7 +81,23 @@ in
       type = types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.bootmap-minimal;
       defaultText = lib.literalExpression "bootmap.packages.\${system}.bootmap-minimal";
-      description = "bootmap package used at boot (the build without windowing libraries is enough).";
+      description = ''
+        bootmap build the boot-time services run (in the initrd too, with
+        `initrd`). Only `bootmap boot` is needed, so the default is the build
+        with nothing else and no windowing libraries.
+      '';
+    };
+
+    userPackage = mkOption {
+      type = types.nullOr types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.bootmap;
+      defaultText = lib.literalExpression "bootmap.packages.\${system}.bootmap";
+      description = ''
+        bootmap build installed for users, with `bootmap view` to replay a
+        recorded boot (`bootmap view /var/log/bootmap/last.json`) or watch
+        systemd live, plus `render` and `capture`. `null` installs nothing,
+        for example on a machine without a desktop.
+      '';
     };
 
     holdSeconds = mkOption {
@@ -252,6 +268,6 @@ in
       };
     };
 
-    environment.systemPackages = [ cfg.package ];
+    environment.systemPackages = lib.optional (cfg.userPackage != null) cfg.userPackage;
   };
 }

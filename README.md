@@ -137,8 +137,13 @@ from bootmap's passphrase prompt. The recording then includes the initrd, and
 `bootmap render --at -1` shows a frame from it (`--at` counts seconds after
 userspace start).
 
-When the boot finishes it saves the timeline to `/var/log/bootmap/last.json`,
-so you can replay it later with `bootmap view`.
+When the boot finishes it saves the timeline to `/var/log/bootmap/last.json`.
+Replay it from your desktop with `bootmap view /var/log/bootmap/last.json`.
+
+The module installs two builds. The boot-time services run one with only
+`bootmap boot` and no windowing libraries (`package`, which is also what goes
+into the initrd). Users get the full one with `view`, `render` and `capture`
+(`userPackage`; set it to `null` on a machine without a desktop).
 
 It keeps drawing until just before the login screen starts (the units in
 `services.bootmap.handoverUnits`: by default the display manager and
@@ -156,7 +161,7 @@ units fading out as they stop and lists the ones holding the shutdown up. It
 runs until systemd hands over to the final shutdown stage. Disable it with
 `showShutdown = false`.
 
-Options: `enable`, `package`, `radialPull`,
+Options: `enable`, `package`, `userPackage`, `radialPull`,
 `holdSeconds`, `handoverUnits`, `initrd`, `showShutdown`, `showDevices`,
 `showProcesses`, `recordPath`, `quietKernel` (adds `quiet loglevel=3`). Plymouth
 must be disabled (asserted).

@@ -15,7 +15,6 @@
         pkgs: with pkgs; [
           libxkbcommon
           wayland
-          libGL
           libx11
           libxcursor
           libxrandr
@@ -26,7 +25,7 @@
       packages = forAll (pkgs: rec {
         bootmap = pkgs.callPackage ./nix/package.nix { };
         # Build used at boot: no windowing dependencies.
-        bootmap-minimal = bootmap.override { withWindow = false; };
+        bootmap-minimal = bootmap.override { bootOnly = true; };
         default = bootmap;
       });
 

@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["window", "drm"]
+default = ["window", "drm", "tools"]
+# `capture` and `render` (and PNG output for the latter).
+tools = ["tiny-skia/png-format"]
 window = ["dep:winit", "dep:softbuffer"]
 drm = ["dep:drm", "dep:signal-hook", "dep:libc"]
 

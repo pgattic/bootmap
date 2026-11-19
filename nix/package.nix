@@ -5,19 +5,19 @@
   dbus,
   libxkbcommon,
   wayland,
-  libGL,
   libx11,
   libxcursor,
   libxrandr,
   libxi,
-  withWindow ? true,
+  # Only `bootmap boot`, for the boot-time services: no window, no tools,
+  # no windowing libraries. The full build adds `view`, `render`, `capture`.
+  bootOnly ? false,
 }:
 
 let
   runtimeLibs = [
     libxkbcommon
     wayland
-    libGL
     libx11
     libxcursor
     libxrandr
@@ -44,15 +44,15 @@ rustPlatform.buildRustPackage {
   buildInputs = [ dbus ];
 
   buildNoDefaultFeatures = true;
-  buildFeatures = [ "drm" ] ++ lib.optional withWindow "window";
+  buildFeatures = [ "drm" ] ++ lib.optionals (!bootOnly) [ "window" "tools" ];
 
   # winit dlopen()s the windowing libraries at runtime.
-  postFixup = lib.optionalString withWindow ''
+  postFixup = lib.optionalString (!bootOnly) ''
     patchelf --add-rpath ${lib.makeLibraryPath runtimeLibs} $out/bin/bootmap
   '';
 
   meta = {
-    description = "Graphical radial systemd boot visualizer";
+    description = "Graphical systemd boot visualizer";
     mainProgram = "bootmap";
     license = lib.licenses.mit;
     platforms = lib.platforms.linux;
