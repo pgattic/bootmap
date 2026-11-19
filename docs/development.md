@@ -69,7 +69,13 @@ The VM test boots NixOS machines with the module, using QEMU:
 | `initrd` | The same process survives the switch to the real system, on the same display, and the recording includes the initrd. |
 | `greeter` | A Wayland compositor as the login screen: the handover happens before it starts, and at shutdown the graph takes the display back from it. |
 
-Screenshots from each machine land in `result/`.
+Screenshots from each machine land in `result/`. A failed build keeps nothing, so
+to look at the screenshots of a failing run, run the driver directly:
+
+```sh
+nix build .#checks.aarch64-linux.vm.driver -o vm-test-driver
+./vm-test-driver/bin/nixos-test-driver --output_directory vm-test-output
+```
 
 The `held` and `initrd` machines also set `services.bootmap.settings`. `held`
 uses a theme, title, colors and a center image built in the test, so its
@@ -102,7 +108,7 @@ It needs the package to build, but no VM.
 |---|---|---|
 | Clippy | x86_64 | `cargo clippy` on all four build variants (default, `drm`, `window`, `tools`), warnings are errors. |
 | Build and unit tests | x86_64 and aarch64 | Both packages (building them runs the unit tests) and the `bad-config` check. |
-| NixOS VM test | x86_64, with KVM | The full VM test. Its screenshots are kept as a build artifact. |
+| NixOS VM test | x86_64, with KVM | The full VM test, run through its driver so the screenshots are kept as a build artifact even when it fails. |
 
 The aarch64 VM test is not in CI; run it locally on an aarch64 machine.
 

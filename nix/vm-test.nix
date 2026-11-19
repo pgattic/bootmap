@@ -170,6 +170,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import re
     import subprocess
     import time
 
@@ -197,7 +198,11 @@ pkgs.testers.runNixOSTest {
         held.screenshot("held-after-getty")
         second_monitor(held, "second-monitor")
         unit_log = held.succeed("journalctl -b -u bootmap.service --no-pager")
-        assert "bootmap: mirroring to Virtual-2 at 1024x768" in unit_log, unit_log
+        # The larger output is the primary, the other is mirrored. Output names
+        # depend on the order the two cards are found in, which differs between
+        # architectures, so only the sizes are checked.
+        assert re.search(r"bootmap: drawing on /dev/dri/card\d+ at 1280x800 ", unit_log), unit_log
+        assert re.search(r"bootmap: mirroring to Virtual-\d+ at 1024x768 ", unit_log), unit_log
         assert "ignoring configuration" not in unit_log, unit_log
         held.succeed("test -e /etc/bootmap.toml")
         held.succeed("bootmap check-config /etc/bootmap.toml")

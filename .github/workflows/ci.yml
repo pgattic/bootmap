@@ -63,12 +63,18 @@ jobs:
         with:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
+      # Run the test's driver directly rather than `nix build`ing the check:
+      # a failed build discards its output, and the screenshots with it.
+      - name: Build the VM test driver
+        run: nix build -L .#checks.x86_64-linux.vm.driver -o vm-test-driver
       - name: VM test
-        run: nix build -L .#checks.x86_64-linux.vm
+        run: |
+          mkdir -p vm-test-output
+          ./vm-test-driver/bin/nixos-test-driver --output_directory vm-test-output
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vm-test-screenshots
-          path: result/
-          if-no-files-found: ignore
+          path: vm-test-output/
+          if-no-files-found: warn
