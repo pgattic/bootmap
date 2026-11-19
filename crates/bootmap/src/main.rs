@@ -99,6 +99,14 @@ enum Cmd {
         ui_scale: Option<f32>,
         #[arg(long, default_value = "1920x1080")]
         size: String,
+        /// Instead of one image: write the whole replay as numbered PNGs
+        /// (00000.png, ...) into this directory, moving as it does in the
+        /// viewer, from the first event until the picture has settled.
+        #[arg(long, conflicts_with = "at")]
+        frames: Option<PathBuf>,
+        /// Frames per second of boot time, with `--frames`.
+        #[arg(long, default_value_t = 12.0, requires = "frames")]
+        fps: f32,
         #[command(flatten)]
         graph: GraphArgs,
     },
@@ -163,7 +171,34 @@ fn main() -> Result<()> {
             }
         }
         #[cfg(feature = "tools")]
-        Cmd::Render { input, at, output, size, highlight, ui_scale, graph } => {
+        Cmd::Render { input, frames: Some(dir), fps, size, highlight, ui_scale, graph, .. } => {
+            // One continuous scene, as in the viewer: units start from the
+            // initial arrangement and settle while the boot plays.
+            let tl = BootTimeline::load(&input)?;
+            let (w, h) = parse_size(&size)?;
+            let (start, end) = tl.span();
+            let (first, last) = (start.saturating_sub(200_000), end + bootmap_core::render::SETTLE_USEC);
+            let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph);
+            scene.hover = highlight;
+            scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            let step = (live::VIEWER_FPS / fps).round().max(1.0) as u32;
+            let mut pm = tiny_skia::Pixmap::new(w, h).context("pixmap")?;
+            let mut n: u64 = 0;
+            loop {
+                let t = first + (n as f64 * 1e6 / fps as f64) as u64;
+                if t > last {
+                    break;
+                }
+                scene.advance(step, w as f32, h as f32);
+                scene.draw(&mut pm, t, n as f32 / fps);
+                pm.save_png(dir.join(format!("{n:05}.png")))?;
+                n += 1;
+            }
+            eprintln!("wrote {n} frames to {}", dir.display());
+        }
+        #[cfg(feature = "tools")]
+        Cmd::Render { input, at, output, size, highlight, ui_scale, graph, .. } => {
             let tl = BootTimeline::load(&input)?;
             let (w, h) = parse_size(&size)?;
             let t = parse_at(&tl, &at)?;

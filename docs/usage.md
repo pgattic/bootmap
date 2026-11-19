@@ -71,7 +71,7 @@ bootmap view                              # watch live
 |---|---|
 | `bootmap view [FILE]` | Replay a recording, or watch live without one. `--speed 0.5` plays at half speed. |
 | `bootmap capture -o FILE` | Save the current boot as a recording, from what systemd remembers. |
-| `bootmap render FILE -o IMAGE.png` | Draw one frame of a recording to a PNG. `--at SECONDS` picks the moment (counted from the start of userspace; negative values reach into the initrd), `--size 1920x1080`, `--highlight UNIT` draws it as if hovered. |
+| `bootmap render FILE -o IMAGE.png` | Draw one frame of a recording to a PNG. `--at SECONDS` picks the moment (counted from the start of userspace; negative values reach into the initrd), `--size 1920x1080`, `--highlight UNIT` draws it as if hovered. With `--frames DIR` (and `--fps`, default 12) it writes the whole replay as numbered PNGs instead, moving as it does in the viewer: ready to turn into a video or GIF. |
 | `bootmap boot` | The boot-time mode. The NixOS module runs it; you do not need to. |
 
 Options shared by `view`, `render` and `boot`:

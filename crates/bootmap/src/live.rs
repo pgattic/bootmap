@@ -214,6 +214,8 @@ pub struct Scene {
     stats: Option<Stats>,
 }
 
+/// Frame rate the viewer runs at, and the physics and camera are tuned for.
+pub const VIEWER_FPS: f32 = 60.0;
 /// Physics steps per drawn frame (settles in ~2.5 s at 60 fps).
 const TICKS_PER_FRAME: usize = 2;
 
@@ -334,6 +336,28 @@ impl Scene {
     pub fn draw_at(&mut self, pm: &mut tiny_skia::Pixmap, t: Usec) {
         self.update_camera(pm.width() as f32, pm.height() as f32);
         let wall = self.epoch.elapsed().as_secs_f32();
+        self.draw(pm, t, wall);
+    }
+
+    /// Advance physics and camera by `n` viewer frames (at `VIEWER_FPS`),
+    /// on a fixed clock instead of the wall clock: for rendering an animation
+    /// that moves the way the viewer does.
+    pub fn advance(&mut self, n: u32, w: f32, h: f32) {
+        for _ in 0..n {
+            if self.source.poll() {
+                self.relayout();
+            }
+            for _ in 0..TICKS_PER_FRAME {
+                self.sim.tick();
+            }
+            self.pos = self.sim.positions();
+            self.update_camera(w, h);
+        }
+    }
+
+    /// Draw as things stand, at boot time `t`; `wall` (seconds) drives the
+    /// pulsing of units that are starting.
+    pub fn draw(&mut self, pm: &mut tiny_skia::Pixmap, t: Usec, wall: f32) {
         let frame = Frame { lay: &self.layout, pos: &self.pos, cam: self.cam, hover: self.index(&self.hover) };
         self.renderer.render(pm, &frame, &self.source.tl, t, wall);
     }
