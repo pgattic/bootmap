@@ -274,8 +274,8 @@ impl Layout {
                     .map(|m| ranks.get(&m.name).copied().unwrap_or(0))
                     .max()
                     .unwrap_or(0);
-                // Prune mode orders by `After=` depth alone, which does not
-                // change as the boot goes on: the tree stays the same.
+                // Prune mode orders by `After=` depth alone, which units
+                // starting do not change: only units joining the graph can.
                 Some((if opts.prune { 0 } else { t }, rank, e.name.clone()))
             }))
             .collect();

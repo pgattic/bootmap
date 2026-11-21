@@ -14,10 +14,24 @@
 
 ## Reading the graph
 
-The white dot in the middle is the system itself. Every other dot is a systemd
-unit (a service, mount, socket, target and so on), linked to the units it
-depends on. Units that start early sit near the center; units that come later,
-like `graphical.target`, drift outward. Bigger dots have more connections.
+The white dot in the middle is the goal of the boot. Every other dot is a
+systemd unit (a service, mount, socket, target and so on), linked to the
+units it depends on. Each unit hangs off the nearest unit that waits for it,
+so the goal's direct dependencies, like `graphical.target`, are close to the
+middle, and the units that start first are at the edge. Bigger dots have
+more connections.
+
+The graph works like a burndown chart. It shows everything systemd is going
+to start, and a unit fades out once it has started and nothing below it is
+left. The graph is cut back from the edge toward the middle: what is still
+on screen is the work left to do, and its outer edge is what is running
+right now. The units that are left close in on the space that opens up, and
+the view zooms in on them, up to three times closer than at the start.
+
+Failed units are never removed, and neither is the chain from a failure to
+the middle, so a boot that went wrong ends with a picture of what failed and
+what it held up. A boot that went well ends with the middle on its own, plus
+the slowest units in the panel on the left.
 
 | Color | Meaning |
 |---|---|
@@ -38,29 +52,23 @@ Several instances of the same template, such as `modprobe@drm.service` and
 `modprobe@fuse.service`, share one dot labelled `modprobe@ ×2`. An instance
 that fails always gets a dot of its own.
 
-### Prune mode
+"Everything systemd is going to start" is what it knows about so far. In
+the initrd that is the initrd's own boot. The real system's units appear
+after the switch to the real root, and units pulled in later, for example by
+hardware being found, join the graph when systemd queues them.
 
-With `mode = "prune"` (see [appearance](#appearance)) the graph works the
-other way around, like a burndown chart. The middle is the boot's goal
-(usually `graphical.target` or `multi-user.target`), and every unit hangs off
-the nearest unit that waits for it, so the units that start first are at the
-edge. The whole graph is there from the start. A unit fades out once it has
-started and nothing below it is left, so the graph is cut back from the edge
-toward the middle. What is still on screen is the work left to do, and its
-outer edge is what is running right now. The units that are left close in
-on the space that opens up, and the view zooms in on them, up to three times
-closer than at the start.
+### Grow mode
 
-Failed units are never pruned, and neither is the chain from a failure to
-the middle, so a boot that went wrong ends with a picture of what failed and
-what it held up. A boot that went well ends with the middle on its own,
-plus the slowest units in the panel on the left.
+With `mode = "grow"` (see [appearance](#appearance)) nothing is removed, and
+the graph is arranged by time instead. The middle is the start of the boot,
+and each unit hangs off the unit it waited for last, the same rule as
+`systemd-analyze critical-chain`. Units that start early sit near the middle,
+and units that come later drift outward. Each unit lights up as it starts
+and stays, so the finished graph shows the whole boot, and following a unit
+toward the middle traces what it was waiting for.
 
-The whole graph is only what systemd knows about so far. In the initrd that
-is the initrd's own boot. The real system's units appear after the switch to
-the real root, and units pulled in later, for example by hardware being
-found, join the graph when systemd queues them. The shutdown view always
-works the usual way.
+The [shutdown view](#shutdown) never removes units, in either mode: they fade
+out as they stop.
 
 ### The panel
 
@@ -105,7 +113,7 @@ Options shared by `view`, `render` and `boot`:
 
 | Option | Effect |
 |---|---|
-| `--radial 0..1` | How strongly units keep to their dependency depth: 0 floats freely, 1 keeps early units central (default 0.5). |
+| `--radial 0..1` | How strongly units keep to their depth in the tree: 0 floats freely, 1 keeps each unit on the ring of its depth (default 0.5). |
 | `--devices`, `--slices` | Also show device units, or slice and scope units (hidden by default; there are many). |
 | `--all` | Include units that never started. |
 | `--no-processes` | Hide the process dots. |
@@ -119,7 +127,7 @@ All under `services.bootmap`.
 |---|---|---|
 | `enable` | `false` | Show bootmap at boot, record every boot, and install the `bootmap` command. |
 | `initrd` | `false` | Start in the initrd, so the graph covers the whole boot. See [starting in the initrd](#starting-in-the-initrd). |
-| `radialPull` | `0.5` | How strongly units keep to their dependency depth (0 to 1). |
+| `radialPull` | `0.5` | How strongly units keep to their depth in the tree (0 to 1). |
 | `handoverUnits` | display manager, `getty@tty1`, `autovt@tty1` | Login screens to step aside for. See [login screens](#login-screens). |
 | `holdSeconds` | `0` | With no login screen to hand over to: how long to keep the finished graph up. |
 | `showShutdown` | `true` | Show the graph when shutting down or rebooting. |
@@ -231,7 +239,7 @@ and the `colors` and `show` groups are nested sets.
 | `font` | bundled DejaVu Sans | A TrueType or OpenType file, used for all text. |
 | `center-image` | none | A PNG drawn in the middle of the graph. |
 | `title` | `"bootmap · <hostname>"` | The heading at the top left. `""` hides it. |
-| `mode` | `"grow"` | `"grow"` or `"prune"`. See [prune mode](#prune-mode). |
+| `mode` | `"prune"` | `"prune"` or `"grow"`. See [reading the graph](#reading-the-graph) and [grow mode](#grow-mode). |
 | `colors.*` | from the theme | Overrides for single colors, as `"#rrggbb"` or `"#rgb"`. See below. |
 | `show.status` | `true` | The elapsed time and the number of units in each state. |
 | `show.activity` | `true` | What is starting right now, or the slowest units once the boot is done. |

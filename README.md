@@ -7,10 +7,11 @@
 ![bootmap following a boot, from the initrd to the finished system](docs/demo/boot.gif)
 
 bootmap replaces the scrolling wall of boot messages with a picture of what
-systemd is actually doing. The system sits at the center, services and other
-units float around it connected by their dependencies, and each one lights up
-as it starts. You can see at a glance what is running, what is still waiting,
-and what is holding the boot up.
+systemd is actually doing. The goal of the boot sits at the center, with
+services and other units around it, connected by their dependencies. Each
+unit lights up as it starts and drops out once it is done, so the graph
+burns down toward the center as the boot goes on. You can see at a glance
+what is running, what is still waiting, and what is holding the boot up.
 
 ## Features
 

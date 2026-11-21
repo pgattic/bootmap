@@ -100,7 +100,9 @@ pkgs.testers.runNixOSTest {
           holdSeconds = 8;
           handoverUnits = [ ];
           # The file and the image must be in the initrd, where bootmap starts.
+          # Also keeps grow mode covered; the other nodes use the default.
           settings = {
+            mode = "grow";
             title = "Initrd test";
             center-image = logo;
             colors.active = "#ff00ff";

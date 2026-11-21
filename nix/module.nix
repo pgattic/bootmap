@@ -155,7 +155,7 @@ in
     radialPull = mkOption {
       type = types.numbers.between 0 1;
       default = 0.5;
-      description = "How strongly units are pulled toward their dependency depth: 0 lets the graph float freely, 1 keeps early units near the center and late ones outside.";
+      description = "How strongly units are pulled toward their depth in the tree: 0 lets the graph float freely, 1 keeps each unit on the ring of its depth.";
     };
 
     showDevices = mkOption {

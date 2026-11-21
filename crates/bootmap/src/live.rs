@@ -32,6 +32,16 @@ pub enum Mode {
     },
 }
 
+/// What a `Source::poll` changed, as far as the layout is concerned.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Changes {
+    /// Units joined or left the graph, or one failed (and left its group).
+    pub units: bool,
+    /// A unit started or finished starting: grow mode's tree is ordered by
+    /// those times.
+    pub timing: bool,
+}
+
 pub struct Source {
     pub tl: BootTimeline,
     pub mode: Mode,
@@ -92,24 +102,23 @@ impl Source {
         from
     }
 
-    /// Drain pending changes. Returns true if the set of units changed
-    /// (a re-layout is needed).
-    pub fn poll(&mut self) -> bool {
+    /// Drain pending changes, and say what they change for the layout.
+    pub fn poll(&mut self) -> Changes {
         let Mode::Live {
             rx,
             finished_at,
             disconnected,
         } = &mut self.mode
         else {
-            return false;
+            return Changes::default();
         };
-        let mut structural = false;
+        let mut changes = Changes::default();
         loop {
             match rx.try_recv() {
                 Ok(LiveMsg::UnitNew(u)) => {
                     if !self.tl.units.contains_key(&u.name) {
                         self.tl.units.insert(u.name.clone(), u);
-                        structural = true;
+                        changes.units = true;
                     }
                 }
                 Ok(LiveMsg::Job(name)) => {
@@ -119,7 +128,7 @@ impl Source {
                         .entry(name.clone())
                         .or_insert_with(|| bootmap_core::Unit::new(name));
                     if !u.job && u.t_activating.is_none() {
-                        structural = true;
+                        changes.units = true;
                     }
                     u.job = true;
                 }
@@ -127,20 +136,30 @@ impl Source {
                     if let Some(u) = self.tl.units.get_mut(&name) {
                         // Never started: it leaves the graph (layouts only
                         // keep units that started or still have a job).
-                        structural |= u.job && u.t_activating.is_none();
+                        changes.units |= u.job && u.t_activating.is_none();
                         u.job = false;
                     }
                 }
                 Ok(LiveMsg::Event(ev)) => {
-                    let first_start = self
-                        .tl
-                        .units
-                        .get(&ev.unit)
-                        .is_none_or(|u| u.t_activating.is_none());
-                    // Timestamps feed the layout ordering; re-layout on first start.
-                    // A unit that fails leaves its template group: re-lay out then too.
+                    let before = self.tl.units.get(&ev.unit).map(|u| {
+                        (
+                            u.job || u.t_activating.is_some() || u.t_active.is_some(),
+                            u.t_activating,
+                            u.t_done(),
+                        )
+                    });
+                    // A unit that fails leaves its template group.
                     let failed = ev.state == bootmap_core::UnitState::Failed;
-                    structural |= self.tl.apply(ev) && (first_start || failed);
+                    let unit = ev.unit.clone();
+                    if self.tl.apply(ev) {
+                        let u = &self.tl.units[&unit];
+                        let (was_in, started, done) = before.unwrap_or_default();
+                        let is_in = u.job || u.t_activating.is_some() || u.t_active.is_some();
+                        // Started without a job we saw: it joins the graph now.
+                        changes.units |= failed || was_in != is_in;
+                        // When it started or finished starting is new.
+                        changes.timing |= u.t_activating != started || u.t_done() != done;
+                    }
                 }
                 Ok(LiveMsg::Finished(_)) if self.tl.phases.in_initrd => {}
                 Ok(LiveMsg::Finished(ph)) => {
@@ -153,7 +172,8 @@ impl Source {
                     if self.tl.phases.finish > 0 {
                         finished_at.get_or_insert_with(Instant::now);
                     }
-                    structural = true;
+                    changes.units = true;
+                    changes.timing = true;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -162,7 +182,7 @@ impl Source {
                 }
             }
         }
-        structural
+        changes
     }
 
     /// After chrooting into the real root: look for the re-executed PID 1 on
@@ -351,6 +371,14 @@ impl Scene {
 
     /// The set of units changed: recompute the tree. The simulation keeps
     /// known units where they are and lets new ones drift in.
+    /// Take in what changed: does the tree need recomputing? Grow mode's tree
+    /// is ordered by when units started and finished starting; prune mode's
+    /// only by their dependencies.
+    fn needs_relayout(&mut self) -> bool {
+        let c = self.source.poll();
+        c.units || (c.timing && !self.opts.prune)
+    }
+
     fn relayout(&mut self) {
         self.full = Layout::compute(&self.source.tl, &self.opts);
         self.show();
@@ -484,7 +512,7 @@ impl Scene {
     /// Advance (data, physics, camera) and draw one frame at the source's time.
     pub fn frame(&mut self, pm: &mut tiny_skia::Pixmap) {
         let t0 = Instant::now();
-        if self.source.poll() {
+        if self.needs_relayout() {
             self.relayout();
         }
         let t = self.source.now();
@@ -512,7 +540,7 @@ impl Scene {
     /// that moves the way the viewer does. `t` is the boot time being drawn.
     pub fn advance(&mut self, n: u32, w: f32, h: f32, t: Usec) {
         for _ in 0..n {
-            if self.source.poll() {
+            if self.needs_relayout() {
                 self.relayout();
             }
             self.prune(t);
@@ -598,10 +626,10 @@ mod tests {
         let (mut src, tx) = live_source();
         let unit = "modprobe@configfs.service";
         tx.send(LiveMsg::Job(unit.into())).unwrap();
-        assert!(src.poll(), "a newly queued unit joins the graph");
+        assert!(src.poll().units, "a newly queued unit joins the graph");
         assert!(in_graph(&src, unit));
         tx.send(LiveMsg::JobDone(unit.into())).unwrap();
-        assert!(src.poll(), "and leaves it when its job is skipped");
+        assert!(src.poll().units, "and leaves it when its job is skipped");
         assert!(!src.tl.units[unit].job);
         assert!(!in_graph(&src, unit));
     }
@@ -625,7 +653,49 @@ mod tests {
         .unwrap();
         src.poll();
         tx.send(LiveMsg::JobDone(unit.into())).unwrap();
-        assert!(!src.poll(), "a finished job changes nothing structural");
+        assert_eq!(
+            src.poll(),
+            Changes::default(),
+            "a finished job changes nothing"
+        );
         assert!(in_graph(&src, unit));
+    }
+
+    #[test]
+    fn starting_and_finishing_change_the_timing() {
+        let (mut src, tx) = live_source();
+        let unit = "systemd-sysctl.service";
+        let send = |t, state| {
+            tx.send(LiveMsg::Event(Event {
+                t,
+                unit: unit.into(),
+                state,
+            }))
+            .unwrap()
+        };
+        tx.send(LiveMsg::Job(unit.into())).unwrap();
+        src.poll();
+        send(100, UnitState::Activating);
+        let c = src.poll();
+        assert!(c.timing && !c.units, "starting: already in the graph");
+        send(200, UnitState::Active);
+        assert!(
+            src.poll().timing,
+            "finishing starting moves it in grow mode's order"
+        );
+        send(200, UnitState::Active);
+        assert_eq!(src.poll(), Changes::default(), "a repeat is no news");
+    }
+
+    #[test]
+    fn a_unit_started_without_a_job_joins_the_graph() {
+        let (mut src, tx) = live_source();
+        tx.send(LiveMsg::Event(Event {
+            t: 100,
+            unit: "early.service".into(),
+            state: UnitState::Activating,
+        }))
+        .unwrap();
+        assert!(src.poll().units);
     }
 }

@@ -32,11 +32,21 @@ An event therefore only counts if it moves the unit forward in time.
 
 ## Laying out the graph
 
-Each unit's parent in the graph is its **critical-chain predecessor**: the
-`After=` dependency that finished starting last before it. This is the rule
-`systemd-analyze critical-chain` uses, so following parents from any unit
-toward the center traces what it was waiting for. Units without one hang off
-the center.
+Each unit's parent in the graph is the **nearest unit that waits for it**: of
+the units with it in their `After=`, the one with the shortest `After=` chain
+that is still longer than its own. Units nothing waits for hang off the
+center, so the boot's goal sits there, and the units that start first are
+the leaves. The tree depends only on the dependencies, not on timing: units
+starting do not move anything around, only units joining the graph can
+(after the switch to the real root, or when systemd queues a new job).
+
+In **grow mode** (`mode = "grow"`) each unit's parent is its
+**critical-chain predecessor** instead: the `After=` dependency that finished
+starting last before it. This is the rule `systemd-analyze critical-chain`
+uses, so following parents from any unit toward the center traces what it was
+waiting for. Units without one hang off the center, which stands for the
+start of the boot. This tree depends on timing, so it is recomputed whenever
+a unit starts or finishes starting, and units move to their new parents.
 
 From these parents bootmap builds a radial tree: each unit sits at a distance
 from the center given by its depth in the tree, and each subtree gets a wedge
@@ -60,19 +70,16 @@ rather than a guess from similar names. A group orders by its last member to
 finish, and links to and from its members become links to and from the group.
 An instance that fails leaves its group, so a group never hides a problem.
 
-**Prune mode** (`mode = "prune"`) turns the tree around. A unit's parent is
-the nearest unit that waits for it: of the units with it in their `After=`,
-the one with the shortest `After=` chain that is still longer than its own.
-Units nothing waits for hang off the center, so the boot's goal sits there.
-The tree depends only on the dependencies, not on timing, so it is the same
-from the first frame of the boot to the last. A node fades out once all its
-units are running or have exited and its whole subtree has faded. Failed units
-never fade, so the chain from a failure to the center stays. Once faded, a
-node is taken out of the layout and the simulation, which warms up so the
-rest close in. Since a node only goes after everything below it, what is left
-is still the same tree. The view always keeps the center in the middle of the
-screen and zooms to fit what is there, but never more than three times
-closer than the widest the graph has been.
+**Pruning** (not in grow mode, nor in the shutdown view): a node fades out
+once all its units are running or have exited and its whole subtree has
+faded. Failed units never fade, so the chain from a failure to the center
+stays. Once faded, a node is taken out of the layout and the simulation,
+which warms up so the rest close in. Since a node only goes after everything
+below it, what is left is still the same tree.
+
+**The view** always keeps the center in the middle of the screen and zooms to
+fit what is there, but never more than three times closer than the widest
+the graph has been.
 
 ## Drawing
 

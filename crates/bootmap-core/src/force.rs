@@ -27,6 +27,9 @@ const ADDED_REHEAT: f32 = 0.35;
 /// Heat when nodes leave it (prune mode): enough for the rest to close in
 /// visibly, gentle enough that the graph does not reshuffle.
 const REMOVED_REHEAT: f32 = 0.25;
+/// Heat when nodes move to another parent (grow mode, as start times come
+/// in): enough for them to follow their new spring.
+const MOVED_REHEAT: f32 = 0.2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ForceParams {
@@ -64,6 +67,8 @@ struct Body {
     /// Pinned position (dragged by the user, or the center node).
     fixed: Option<(f32, f32)>,
     target_r: f32,
+    /// Name of the tree parent, to notice when a rebuild moves the node.
+    parent: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,13 +112,17 @@ impl Sim {
         let old: HashMap<&str, &Body> = self.bodies.iter().map(|b| (b.name.as_str(), b)).collect();
         let mut bodies: Vec<Body> = Vec::with_capacity(lay.nodes.len());
         let mut added = false;
+        let mut moved = false;
         let mut kept = 0;
         for (i, n) in lay.nodes.iter().enumerate() {
             let target_r = radius(n.depth) * RING;
+            let parent = n.parent.map(|p| lay.nodes[p].name.clone());
             if let Some(b) = old.get(n.name.as_str()) {
                 kept += 1;
+                moved |= b.parent != parent;
                 bodies.push(Body {
                     target_r,
+                    parent,
                     ..(*b).clone()
                 });
                 continue;
@@ -143,6 +152,7 @@ impl Sim {
                 vy: 0.0,
                 fixed,
                 target_r,
+                parent,
             });
         }
         // Keep user pins across rebuilds, and always pin the center.
@@ -195,6 +205,9 @@ impl Sim {
         }
         if removed {
             self.reheat(REMOVED_REHEAT);
+        }
+        if moved {
+            self.reheat(MOVED_REHEAT);
         }
     }
 
@@ -499,5 +512,21 @@ mod tests {
         // Same layout: nothing moves on rebuild.
         s.rebuild(&lay);
         assert_eq!(before, s.positions());
+    }
+
+    #[test]
+    fn a_node_moving_to_another_parent_warms_the_simulation_up() {
+        let (lay, mut s) = settled(0.5);
+        assert!(!s.active());
+        s.rebuild(&lay);
+        assert!(!s.active(), "nothing changed, nothing to move");
+        // Hang a node off the center instead of its parent.
+        let k = (1..lay.nodes.len())
+            .find(|&i| lay.nodes[i].parent != Some(ROOT))
+            .unwrap();
+        let mut moved = lay.clone();
+        moved.nodes[k].parent = Some(ROOT);
+        s.rebuild(&moved);
+        assert!(s.active(), "the moved node follows its new spring");
     }
 }

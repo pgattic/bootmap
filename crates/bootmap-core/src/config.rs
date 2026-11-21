@@ -9,7 +9,7 @@
 //! font = "/path/font.ttf"    # TrueType or OpenType; default: bundled DejaVu Sans
 //! center-image = "/path/logo.png"
 //! title = "Welcome"          # "" hides it; default: "bootmap · <hostname>"
-//! mode = "prune"             # "grow" (default) or "prune"
+//! mode = "grow"              # "prune" (default) or "grow"
 //!
 //! [colors]                   # override any color of the theme: "#rrggbb" or "#rgb"
 //! active = "#7ebae4"
@@ -89,14 +89,14 @@ pub enum Theme {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
-    /// Units light up as they start, and the finished graph shows the whole
-    /// boot (the default).
-    #[default]
-    Grow,
     /// The graph is rooted at the boot's goal and units are pruned once they
     /// have started, leaves first: what is left is the work still to do.
-    /// Failed units stay, with their way to the center.
+    /// Failed units stay, with their way to the center (the default).
+    #[default]
     Prune,
+    /// Units light up as they start and stay, hanging off what they waited
+    /// for: the finished graph shows the whole boot.
+    Grow,
 }
 
 /// Every color the renderer uses.
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(c.show, Show::default());
         let look = c.resolve().unwrap();
         assert_eq!(look.text_scale, 1.0);
-        assert_eq!(look.mode, Mode::Grow);
+        assert_eq!(look.mode, Mode::Prune);
         assert!(look.font.is_none() && look.center_image.is_none() && look.title.is_none());
     }
 
@@ -354,7 +354,7 @@ mod tests {
             theme = "black"
             text-scale = 1.5
             title = ""
-            mode = "prune"
+            mode = "grow"
             [colors]
             active = "#7ebae4"
             failed = "#f00"
@@ -376,7 +376,7 @@ mod tests {
         assert!(!c.show.legend && !c.show.extra_edges && c.show.labels);
         let look = c.resolve().unwrap();
         assert_eq!(look.text_scale, 1.5);
-        assert_eq!(look.mode, Mode::Prune);
+        assert_eq!(look.mode, Mode::Grow);
         assert_eq!(look.title.as_deref(), Some(""));
     }
 

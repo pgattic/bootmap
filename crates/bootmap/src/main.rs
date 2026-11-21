@@ -45,8 +45,8 @@ pub struct GraphArgs {
     /// Hide faint non-tree dependency edges.
     #[arg(long)]
     no_extra_edges: bool,
-    /// Pull toward each unit's dependency depth: 0 lets the graph float
-    /// freely, 1 keeps early units near the center and late ones outside.
+    /// Pull toward each unit's depth in the tree: 0 lets the graph float
+    /// freely, 1 keeps each unit on the ring of its depth.
     #[arg(long, default_value_t = 0.5)]
     pub radial: f32,
     /// Configuration file (look and panels). Default: /etc/bootmap.toml if it exists.
