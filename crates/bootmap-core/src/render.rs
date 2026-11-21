@@ -63,28 +63,21 @@ impl Camera {
         )
     }
 
-    /// Fit `points` (world) into a `w`×`h` screen with `margin` px around them.
+    /// Fit `points` (world) into a `w`×`h` screen with `margin` px around
+    /// them, zooming only: the center node (the world origin) stays in the
+    /// middle of the screen, however lopsided the graph is.
     pub fn fit(points: &[(f32, f32)], w: f32, h: f32, margin: f32) -> Self {
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let (mut ex, mut ey) = (0.0f32, 0.0f32);
         for &(x, y) in points {
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
+            ex = ex.max(x.abs());
+            ey = ey.max(y.abs());
         }
-        if x0 > x1 {
-            return Self {
-                cx: 0.0,
-                cy: 0.0,
-                scale: 50.0,
-            };
-        }
-        let bw = (x1 - x0).max(1.0);
-        let bh = (y1 - y0).max(1.0);
-        let scale = ((w - 2.0 * margin).max(50.0) / bw).min((h - 2.0 * margin).max(50.0) / bh);
+        let ex = ex.max(0.5);
+        let ey = ey.max(0.5);
+        let scale = ((w / 2.0 - margin).max(25.0) / ex).min((h / 2.0 - margin).max(25.0) / ey);
         Self {
-            cx: (x0 + x1) / 2.0,
-            cy: (y0 + y1) / 2.0,
+            cx: 0.0,
+            cy: 0.0,
             scale,
         }
     }
@@ -1595,6 +1588,24 @@ mod tests {
         a.iter()
             .zip(b)
             .all(|(x, y)| (*x as i32 - y as i32).abs() <= tol)
+    }
+
+    #[test]
+    fn fit_keeps_the_center_in_the_middle() {
+        // A lopsided graph: everything is to the right of and below the center.
+        let pts = [(0.0, 0.0), (4.0, 1.0), (6.0, 3.0), (1.0, 2.0)];
+        let (w, h, m) = (800.0, 600.0, 40.0);
+        let cam = Camera::fit(&pts, w, h, m);
+        assert_eq!(cam.to_px(w, h, 0.0, 0.0), (w / 2.0, h / 2.0));
+        for &(x, y) in &pts {
+            let (px, py) = cam.to_px(w, h, x, y);
+            assert!(
+                (m..=w - m).contains(&px) && (m..=h - m).contains(&py),
+                "({x},{y}) at ({px},{py})"
+            );
+        }
+        // As large as that allows: the farthest point touches the margin.
+        assert!((cam.to_px(w, h, 6.0, 0.0).0 - (w - m)).abs() < 1e-3);
     }
 
     #[test]
