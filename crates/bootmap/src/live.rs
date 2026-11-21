@@ -14,6 +14,7 @@ use bootmap_core::model::Usec;
 use bootmap_core::render::{Camera, Frame};
 use bootmap_core::systemd::{monotonic_now, LiveMsg, Systemd};
 use bootmap_core::{BootTimeline, ForceParams, Layout, LayoutOptions, Renderer, Sim};
+use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
@@ -278,6 +279,11 @@ impl Source {
 pub struct Scene {
     pub source: Source,
     opts: LayoutOptions,
+    /// Every unit in the graph, pruned or not.
+    full: Layout,
+    /// Prune mode: the units fully pruned (faded out) by now.
+    gone: BTreeSet<String>,
+    /// What is drawn and simulated: `full` without what is `gone`.
     pub layout: Layout,
     pub sim: Sim,
     /// World position of each layout node, from the simulation.
@@ -286,11 +292,9 @@ pub struct Scene {
     pub cam: Camera,
     /// Keep the whole graph in view (off once the user pans or zooms).
     pub auto_fit: bool,
-    /// Prune mode, experimental: fit only what has not been pruned, so the
-    /// view zooms in as the graph burns down (`z` in the viewer).
-    pub fit_remaining: bool,
-    /// Prune mode: each node's opacity at the last physics update.
-    fade: Option<Vec<f32>>,
+    /// The farthest the graph has reached from the center, on each axis: the
+    /// view zooms in on what is left at most `MAX_ZOOM_IN` times beyond it.
+    widest: (f32, f32),
     snap: bool,
     /// Hovered / dragged unit, by name so they survive re-layouts.
     pub hover: Option<String>,
@@ -302,8 +306,8 @@ pub struct Scene {
 
 /// Frame rate the viewer runs at, and the physics and camera are tuned for.
 pub const VIEWER_FPS: f32 = 60.0;
-/// Fitting what is left after pruning (`fit_remaining`) zooms in at most
-/// this much further than fitting the whole graph.
+/// As the graph is pruned the view zooms in on what is left, at most this
+/// much further than when it showed the graph at its widest.
 const MAX_ZOOM_IN: f32 = 3.0;
 /// Physics steps per drawn frame (settles in ~2.5 s at 60 fps).
 const TICKS_PER_FRAME: usize = 2;
@@ -324,6 +328,8 @@ impl Scene {
         Self {
             sim,
             pos,
+            full: layout.clone(),
+            gone: BTreeSet::new(),
             layout,
             renderer: Renderer::new(graph.render_options(), look),
             cam: Camera {
@@ -332,8 +338,7 @@ impl Scene {
                 scale: 50.0,
             },
             auto_fit: true,
-            fit_remaining: false,
-            fade: None,
+            widest: (0.0, 0.0),
             snap: true,
             hover: None,
             dragging: None,
@@ -347,8 +352,22 @@ impl Scene {
     /// The set of units changed: recompute the tree. The simulation keeps
     /// known units where they are and lets new ones drift in.
     fn relayout(&mut self) {
-        self.layout = Layout::compute(&self.source.tl, &self.opts);
+        self.full = Layout::compute(&self.source.tl, &self.opts);
+        self.show();
+    }
+
+    /// Show `full` without what is `gone`. In prune mode the tree does not
+    /// change as units go, so the rest keep their places; the simulation
+    /// warms up and they close in.
+    fn show(&mut self) {
+        self.layout = if self.gone.is_empty() {
+            self.full.clone()
+        } else {
+            let (full, gone) = (&self.full, &self.gone);
+            full.without(|i| gone.contains(&full.nodes[i].name))
+        };
         self.sim.rebuild(&self.layout);
+        self.pos = self.sim.positions();
     }
 
     fn index(&self, name: &Option<String>) -> Option<usize> {
@@ -356,12 +375,21 @@ impl Scene {
             .and_then(|n| self.layout.index.get(n).copied())
     }
 
-    /// Prune mode: let the physics know which units are fading out or gone
-    /// at boot time `t`, so the rest move into the room they leave.
-    pub fn update_presence(&mut self, t: Usec) {
-        self.fade = self.renderer.fade(&self.layout, &self.source.tl, t);
-        if let Some(fade) = &self.fade {
-            self.sim.set_presence(fade);
+    /// Prune mode: take out the units that have faded out by boot time `t`
+    /// (and bring back any that have not, when a replay goes back in time).
+    pub fn prune(&mut self, t: Usec) {
+        let Some(fade) = self.renderer.fade(&self.full, &self.source.tl, t) else {
+            return;
+        };
+        let gone: BTreeSet<String> = fade
+            .iter()
+            .enumerate()
+            .filter(|&(_, &a)| a <= 0.0)
+            .map(|(i, _)| self.full.nodes[i].name.clone())
+            .collect();
+        if gone != self.gone {
+            self.gone = gone;
+            self.show();
         }
     }
 
@@ -369,7 +397,15 @@ impl Scene {
     pub fn settle(&mut self) {
         self.sim.settle(2000);
         self.pos = self.sim.positions();
+        self.note_extent();
         self.snap = true;
+    }
+
+    fn note_extent(&mut self) {
+        for &(x, y) in &self.pos {
+            self.widest.0 = self.widest.0.max(x.abs());
+            self.widest.1 = self.widest.1.max(y.abs());
+        }
     }
 
     pub fn adjust_radial(&mut self, delta: f32) {
@@ -378,15 +414,9 @@ impl Scene {
     }
 
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32) -> Option<usize> {
-        // Pointer reach scales with the screen, like the dots. Pruned units
-        // are gone: the pointer finds what is still there.
-        let fade = self
-            .renderer
-            .fade(&self.layout, &self.source.tl, self.source.now());
+        // Pointer reach scales with the screen, like the dots.
         self.frame_desc(None)
-            .pick_where(w, h, px, py, 14.0 * self.renderer.ui_scale, |i| {
-                fade.as_ref().is_none_or(|f| f[i] > 0.0)
-            })
+            .pick(w, h, px, py, 14.0 * self.renderer.ui_scale)
     }
 
     pub fn node_name(&self, i: usize) -> String {
@@ -421,6 +451,7 @@ impl Scene {
     fn frame_desc(&self, hover: Option<usize>) -> Frame<'_> {
         Frame {
             lay: &self.layout,
+            all: &self.full,
             pos: &self.pos,
             cam: self.cam,
             hover,
@@ -437,23 +468,11 @@ impl Scene {
             20.0
         };
         let margin = 0.05 * w.min(h) + label_room * self.renderer.ui_scale;
-        let whole = Camera::fit(&self.pos, w, h, margin);
-        let target = match self.fade.as_ref().filter(|_| self.fit_remaining) {
-            Some(fade) => {
-                let left: Vec<(f32, f32)> = self
-                    .pos
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| fade.get(*i).is_none_or(|&a| a > 0.0))
-                    .map(|(_, &p)| p)
-                    .collect();
-                // Both fits center on the same point: only the zoom differs.
-                let mut cam = Camera::fit(&left, w, h, margin);
-                cam.scale = cam.scale.min(whole.scale * MAX_ZOOM_IN);
-                cam
-            }
-            None => whole,
-        };
+        self.note_extent();
+        let mut target = Camera::fit(&self.pos, w, h, margin);
+        // Both fits center on the same point: only the zoom differs.
+        let widest = Camera::fit(&[self.widest], w, h, margin);
+        target.scale = target.scale.min(widest.scale * MAX_ZOOM_IN);
         self.cam = if self.snap {
             target
         } else {
@@ -469,7 +488,7 @@ impl Scene {
             self.relayout();
         }
         let t = self.source.now();
-        self.update_presence(t);
+        self.prune(t);
         for _ in 0..TICKS_PER_FRAME {
             self.sim.tick();
         }
@@ -496,7 +515,7 @@ impl Scene {
             if self.source.poll() {
                 self.relayout();
             }
-            self.update_presence(t);
+            self.prune(t);
             for _ in 0..TICKS_PER_FRAME {
                 self.sim.tick();
             }
@@ -510,6 +529,7 @@ impl Scene {
     pub fn draw(&mut self, pm: &mut tiny_skia::Pixmap, t: Usec, wall: f32) {
         let frame = Frame {
             lay: &self.layout,
+            all: &self.full,
             pos: &self.pos,
             cam: self.cam,
             hover: self.index(&self.hover),

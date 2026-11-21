@@ -67,7 +67,12 @@ Units nothing waits for hang off the center, so the boot's goal sits there.
 The tree depends only on the dependencies, not on timing, so it is the same
 from the first frame of the boot to the last. A node fades out once all its
 units are running or have exited and its whole subtree has faded. Failed units
-never fade, so the chain from a failure to the center stays.
+never fade, so the chain from a failure to the center stays. Once faded, a
+node is taken out of the layout and the simulation, which warms up so the
+rest close in. Since a node only goes after everything below it, what is left
+is still the same tree. The view always keeps the center in the middle of the
+screen and zooms to fit what is there, but never more than three times
+closer than the widest the graph has been.
 
 ## Drawing
 

@@ -103,7 +103,11 @@ impl Camera {
 
 /// Everything that varies per frame besides the timeline.
 pub struct Frame<'a> {
+    /// What is drawn.
     pub lay: &'a Layout,
+    /// Every unit, including those pruned from `lay` (prune mode): what the
+    /// panel counts and ranks. The same as `lay` otherwise.
+    pub all: &'a Layout,
     /// World position of each layout node.
     pub pos: &'a [(f32, f32)],
     pub cam: Camera,
@@ -113,27 +117,8 @@ pub struct Frame<'a> {
 impl Frame<'_> {
     /// Index of the node within `reach` pixels of (px, py), if any.
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32, reach: f32) -> Option<usize> {
-        self.pick_where(w, h, px, py, reach, |_| true)
-    }
-
-    /// Like `pick`, among the nodes `keep` accepts.
-    pub fn pick_where(
-        &self,
-        w: f32,
-        h: f32,
-        px: f32,
-        py: f32,
-        reach: f32,
-        keep: impl Fn(usize) -> bool,
-    ) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
-        for (i, &(x, y)) in self
-            .pos
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter(|(i, _)| keep(*i))
-        {
+        for (i, &(x, y)) in self.pos.iter().enumerate().skip(1) {
             let (sx, sy) = self.cam.to_px(w, h, x, y);
             let d2 = (sx - px).powi(2) + (sy - py).powi(2);
             if d2 < reach * reach && best.is_none_or(|(b, _)| d2 < b) {
@@ -363,7 +348,7 @@ fn label_candidates(
     }
     let finished = tl.phases.finish > 0 && t >= tl.phases.finish;
     let slow: HashSet<usize> = if finished {
-        slowest(lay, tl)
+        slowest(f.all, tl)
             .iter()
             .take(8)
             .filter_map(|(u, _)| lay.index.get(u).copied())
@@ -830,8 +815,8 @@ impl Renderer {
 
         if self.opts.hud {
             match self.opts.shutdown_from {
-                Some(from) => self.hud_shutdown(pm, lay, tl, t, &vis, from),
-                None => self.hud(pm, lay, tl, t, &vis),
+                Some(from) => self.hud_shutdown(pm, f.all, tl, t, &vis, from),
+                None => self.hud(pm, f.all, tl, t, &vis),
             }
             if let Some(hv) = f.hover {
                 self.info_panel(pm, lay, tl, hv, node_vis(hv), t, &vis);
@@ -1567,6 +1552,7 @@ mod tests {
             &mut pm,
             &Frame {
                 lay: &lay,
+                all: &lay,
                 pos: &pos,
                 cam,
                 hover: None,

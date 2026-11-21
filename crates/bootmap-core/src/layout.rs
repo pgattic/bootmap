@@ -414,19 +414,74 @@ impl Layout {
             }
         }
 
-        // Undirected adjacency over tree + extra edges.
-        lay.adj = vec![Vec::new(); lay.nodes.len()];
-        for (i, n) in lay.nodes.iter().enumerate() {
-            if let Some(p) = n.parent {
-                lay.adj[i].push(p);
-                lay.adj[p].push(i);
+        lay.link_adjacency();
+        lay
+    }
+
+    /// The same layout without the nodes `gone` says (the root always stays).
+    /// Nodes keep their depth, angle and order. For prune mode, where a
+    /// node only goes once everything below it has, so what is left is still
+    /// a tree: a node whose parent is gone would hang off the root.
+    pub fn without(&self, gone: impl Fn(usize) -> bool) -> Layout {
+        let mut new_at = vec![None; self.nodes.len()];
+        let mut lay = Layout {
+            max_depth: self.max_depth,
+            ..Default::default()
+        };
+        for (i, n) in self.nodes.iter().enumerate() {
+            if i == ROOT || !gone(i) {
+                new_at[i] = Some(lay.nodes.len());
+                lay.nodes.push(n.clone());
             }
         }
-        for &(a, b) in &lay.extra_edges {
-            lay.adj[a].push(b);
-            lay.adj[b].push(a);
+        let map = |i: usize| new_at[i];
+        for n in lay.nodes.iter_mut() {
+            n.parent = n.parent.map(|p| map(p).unwrap_or(ROOT));
+            n.children = n.children.iter().filter_map(|&c| map(c)).collect();
         }
+        for i in 1..lay.nodes.len() {
+            let p = lay.nodes[i].parent.unwrap_or(ROOT);
+            if !lay.nodes[p].children.contains(&i) {
+                lay.nodes[p].children.push(i);
+            }
+        }
+        lay.index = self
+            .index
+            .iter()
+            .filter_map(|(name, &i)| Some((name.clone(), map(i)?)))
+            .collect();
+        lay.extra_edges = self
+            .extra_edges
+            .iter()
+            .filter_map(|&(a, b)| Some((map(a)?, map(b)?)))
+            .collect();
+        lay.procs = self
+            .procs
+            .iter()
+            .filter_map(|p| {
+                Some(ProcNode {
+                    unit: map(p.unit)?,
+                    ..p.clone()
+                })
+            })
+            .collect();
+        lay.link_adjacency();
         lay
+    }
+
+    /// Undirected adjacency over tree and extra edges.
+    fn link_adjacency(&mut self) {
+        self.adj = vec![Vec::new(); self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(p) = n.parent {
+                self.adj[i].push(p);
+                self.adj[p].push(i);
+            }
+        }
+        for &(a, b) in &self.extra_edges {
+            self.adj[a].push(b);
+            self.adj[b].push(a);
+        }
     }
 
     pub fn degree(&self, i: usize) -> usize {
@@ -605,6 +660,34 @@ mod tests {
         let depth = |u: &str| lay.nodes[lay.index[u]].depth;
         assert_eq!(depth("graphical.target"), 1);
         assert!(depth("sysinit.target") > depth("multi-user.target"));
+    }
+
+    #[test]
+    fn without_drops_nodes_and_keeps_the_rest_linked() {
+        let full = pruned(&sample());
+        // Every leaf goes, as in prune mode.
+        let leaf = |i: usize| i != ROOT && full.nodes[i].children.is_empty();
+        let lay = full.without(leaf);
+        let leaves = (0..full.nodes.len()).filter(|&i| leaf(i)).count();
+        assert_eq!(lay.nodes.len(), full.nodes.len() - leaves);
+        // (The root is not in the index: it is no unit.)
+        for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+            assert_eq!(lay.index[&n.name], i, "{} indexed", n.name);
+            if let Some(p) = n.parent {
+                assert!(lay.nodes[p].children.contains(&i));
+                let was = &full.nodes[full.index[&n.name]];
+                assert_eq!(lay.nodes[p].name, full.nodes[was.parent.unwrap()].name);
+            }
+            for &c in &n.children {
+                assert_eq!(lay.nodes[c].parent, Some(i));
+            }
+        }
+        for &(a, b) in &lay.extra_edges {
+            assert!(a < lay.nodes.len() && b < lay.nodes.len());
+        }
+        for (i, n) in full.nodes.iter().enumerate().skip(1) {
+            assert_eq!(lay.index.contains_key(&n.name), !leaf(i), "{}", n.name);
+        }
     }
 
     #[test]

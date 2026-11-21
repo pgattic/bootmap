@@ -271,7 +271,7 @@ fn main() -> Result<()> {
             let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph, look);
             // Settled as things stand at `t`: in prune mode, without what is gone.
             scene.settle();
-            scene.update_presence(t);
+            scene.prune(t);
             scene.settle();
             scene.hover = highlight;
             scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));

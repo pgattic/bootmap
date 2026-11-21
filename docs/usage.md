@@ -47,7 +47,9 @@ the nearest unit that waits for it, so the units that start first are at the
 edge. The whole graph is there from the start. A unit fades out once it has
 started and nothing below it is left, so the graph is cut back from the edge
 toward the middle. What is still on screen is the work left to do, and its
-outer edge is what is running right now.
+outer edge is what is running right now. The units that are left close in
+on the space that opens up, and the view zooms in on them, up to three times
+closer than at the start.
 
 Failed units are never pruned, and neither is the chain from a failure to
 the middle, so a boot that went wrong ends with a picture of what failed and
