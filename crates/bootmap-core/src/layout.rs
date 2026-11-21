@@ -3,7 +3,9 @@
 //! Each unit's tree parent is its critical-chain predecessor: the `After=`
 //! dependency that became active last before it, which is the same rule
 //! `systemd-analyze critical-chain` uses. Units without one hang off the
-//! central "system" node. Each subtree gets an angular wedge proportional
+//! central "system" node. In prune mode the tree is turned around: each
+//! unit hangs off the nearest unit that waits for it, so the boot's goal is
+//! at the center and the units that start first are the leaves. Each subtree gets an angular wedge proportional
 //! to its leaf count, at a radius given by its depth.
 //!
 //! This radial arrangement is not drawn as such. It is where the force
@@ -32,6 +34,10 @@ pub struct LayoutOptions {
     pub include_never_started: bool,
     /// Show the processes of each unit as satellites.
     pub processes: bool,
+    /// Root the tree at the boot's goal instead: each unit hangs off the
+    /// nearest unit ordered after it, so the units that start first are the
+    /// leaves (see `config::Mode::Prune`).
+    pub prune: bool,
 }
 
 impl Default for LayoutOptions {
@@ -42,6 +48,7 @@ impl Default for LayoutOptions {
                 .collect(),
             include_never_started: false,
             processes: true,
+            prune: false,
         }
     }
 }
@@ -267,13 +274,44 @@ impl Layout {
                     .map(|m| ranks.get(&m.name).copied().unwrap_or(0))
                     .max()
                     .unwrap_or(0);
-                Some((t, rank, e.name.clone()))
+                // Prune mode orders by `After=` depth alone, which does not
+                // change as the boot goes on: the tree stays the same.
+                Some((if opts.prune { 0 } else { t }, rank, e.name.clone()))
             }))
             .collect();
 
+        // Prune mode: the nearest unit that waits for us (has one of our
+        // members in its `After=`). Units nothing waits for hang off the root.
+        if opts.prune {
+            let mut waiters: Vec<Vec<usize>> = vec![Vec::new(); lay.nodes.len()];
+            for (ei, e) in ents.iter().enumerate() {
+                let me = ei + 1;
+                for d in e.members.iter().flat_map(|m| &m.deps.after) {
+                    if let Some(&idx) = lay.index.get(d) {
+                        if idx != me && !waiters[idx].contains(&me) {
+                            waiters[idx].push(me);
+                        }
+                    }
+                }
+            }
+            for (me, ws) in waiters.iter().enumerate().skip(1) {
+                let my_key = keys[me].as_ref().unwrap();
+                let parent = ws
+                    .iter()
+                    .filter_map(|&w| {
+                        let k = keys[w].as_ref().unwrap();
+                        (k > my_key).then_some((k, w))
+                    })
+                    .min()
+                    .map(|(_, w)| w)
+                    .unwrap_or(ROOT);
+                lay.nodes[me].parent = Some(parent);
+            }
+        }
+
         // Critical-chain parent: the latest `After=` dependency (of any
         // member) that precedes us.
-        for (ei, e) in ents.iter().enumerate() {
+        for (ei, e) in ents.iter().enumerate().filter(|_| !opts.prune) {
             let me = ei + 1;
             let my_key = keys[me].as_ref().unwrap();
             let parent = e
@@ -525,6 +563,67 @@ mod tests {
             assert_eq!(n.depth, p.depth + 1);
             assert_eq!(n.r, radius(n.depth));
             assert!(n.r > p.r);
+        }
+    }
+
+    fn pruned(tl: &BootTimeline) -> Layout {
+        let opts = LayoutOptions {
+            prune: true,
+            ..Default::default()
+        };
+        Layout::compute(tl, &opts)
+    }
+
+    #[test]
+    fn prune_tree_hangs_each_unit_off_one_that_waits_for_it() {
+        let tl = sample();
+        let lay = pruned(&tl);
+        let mut deep = 0;
+        for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+            // Reaches the root without a cycle.
+            let mut cur = i;
+            for _ in 0..=lay.nodes.len() {
+                match lay.nodes[cur].parent {
+                    Some(p) => cur = p,
+                    None => break,
+                }
+            }
+            assert_eq!(cur, ROOT, "{} does not reach the root", n.name);
+            let p = n.parent.unwrap();
+            if p == ROOT {
+                continue;
+            }
+            deep += 1;
+            let waits = lay.nodes[p]
+                .units
+                .iter()
+                .any(|w| tl.units[w].deps.after.iter().any(|a| n.units.contains(a)));
+            assert!(waits, "{} is not waiting for {}", lay.nodes[p].name, n.name);
+        }
+        assert!(deep > lay.nodes.len() / 2, "most units hang off another");
+        // The goal is at the center, what starts first is far out.
+        let depth = |u: &str| lay.nodes[lay.index[u]].depth;
+        assert_eq!(depth("graphical.target"), 1);
+        assert!(depth("sysinit.target") > depth("multi-user.target"));
+    }
+
+    #[test]
+    fn prune_tree_does_not_depend_on_timing() {
+        let tl = sample();
+        let mut early = tl.clone();
+        // The same units, all still waiting for their jobs.
+        for u in early.units.values_mut() {
+            let in_graph = u.job || u.t_activating.is_some() || u.t_active.is_some();
+            u.job = in_graph;
+            u.t_activating = None;
+            u.t_active = None;
+            u.t_inactive = None;
+        }
+        let (a, b) = (pruned(&tl), pruned(&early));
+        let parent =
+            |l: &Layout, n: &str| l.nodes[l.nodes[l.index[n]].parent.unwrap()].name.clone();
+        for n in &a.nodes[1..] {
+            assert_eq!(parent(&a, &n.name), parent(&b, &n.name), "{}", n.name);
         }
     }
 

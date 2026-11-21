@@ -9,6 +9,7 @@
 //! font = "/path/font.ttf"    # TrueType or OpenType; default: bundled DejaVu Sans
 //! center-image = "/path/logo.png"
 //! title = "Welcome"          # "" hides it; default: "bootmap · <hostname>"
+//! mode = "prune"             # "grow" (default) or "prune"
 //!
 //! [colors]                   # override any color of the theme: "#rrggbb" or "#rgb"
 //! active = "#7ebae4"
@@ -82,6 +83,20 @@ pub enum Theme {
     Dark,
     /// True black background, for OLED panels and a seamless boot.
     Black,
+}
+
+/// How the graph follows the boot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Mode {
+    /// Units light up as they start, and the finished graph shows the whole
+    /// boot (the default).
+    #[default]
+    Grow,
+    /// The graph is rooted at the boot's goal and units are pruned once they
+    /// have started, leaves first: what is left is the work still to do.
+    /// Failed units stay, with their way to the center.
+    Prune,
 }
 
 /// Every color the renderer uses.
@@ -195,6 +210,7 @@ impl Default for Show {
 #[serde(deny_unknown_fields, rename_all = "kebab-case", default)]
 pub struct Config {
     pub theme: Theme,
+    pub mode: Mode,
     pub colors: Colors,
     /// Multiplies the size of all text (not dots or lines). Default 1.
     pub text_scale: Option<f32>,
@@ -211,6 +227,7 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct Look {
     pub palette: Palette,
+    pub mode: Mode,
     pub text_scale: f32,
     /// Font file contents; `None` means the bundled font.
     pub font: Option<Vec<u8>>,
@@ -305,6 +322,7 @@ impl Config {
         };
         Ok(Look {
             palette: self.palette(),
+            mode: self.mode,
             text_scale: self.text_scale.unwrap_or(1.0),
             font,
             center_image,
@@ -325,6 +343,7 @@ mod tests {
         assert_eq!(c.show, Show::default());
         let look = c.resolve().unwrap();
         assert_eq!(look.text_scale, 1.0);
+        assert_eq!(look.mode, Mode::Grow);
         assert!(look.font.is_none() && look.center_image.is_none() && look.title.is_none());
     }
 
@@ -335,6 +354,7 @@ mod tests {
             theme = "black"
             text-scale = 1.5
             title = ""
+            mode = "prune"
             [colors]
             active = "#7ebae4"
             failed = "#f00"
@@ -356,6 +376,7 @@ mod tests {
         assert!(!c.show.legend && !c.show.extra_edges && c.show.labels);
         let look = c.resolve().unwrap();
         assert_eq!(look.text_scale, 1.5);
+        assert_eq!(look.mode, Mode::Prune);
         assert_eq!(look.title.as_deref(), Some(""));
     }
 
@@ -364,6 +385,7 @@ mod tests {
         for (bad, why) in [
             ("tehme = \"dark\"", "unknown key"),
             ("theme = \"light\"", "unknown theme"),
+            ("mode = \"shrink\"", "unknown mode"),
             ("[colors]\nactive = \"7ebae4\"", "missing #"),
             ("[colors]\nactive = \"#7ebae\"", "wrong length"),
             ("[colors]\nactive = \"#zzzzzz\"", "not hex"),

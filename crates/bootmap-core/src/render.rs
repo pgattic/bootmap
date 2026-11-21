@@ -120,8 +120,27 @@ pub struct Frame<'a> {
 impl Frame<'_> {
     /// Index of the node within `reach` pixels of (px, py), if any.
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32, reach: f32) -> Option<usize> {
+        self.pick_where(w, h, px, py, reach, |_| true)
+    }
+
+    /// Like `pick`, among the nodes `keep` accepts.
+    pub fn pick_where(
+        &self,
+        w: f32,
+        h: f32,
+        px: f32,
+        py: f32,
+        reach: f32,
+        keep: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
-        for (i, &(x, y)) in self.pos.iter().enumerate().skip(1) {
+        for (i, &(x, y)) in self
+            .pos
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(i, _)| keep(*i))
+        {
             let (sx, sy) = self.cam.to_px(w, h, x, y);
             let d2 = (sx - px).powi(2) + (sy - py).powi(2);
             if d2 < reach * reach && best.is_none_or(|(b, _)| d2 < b) {
@@ -264,6 +283,56 @@ pub fn visuals_at(
     m
 }
 
+/// Prune mode: how long a unit takes to fade out of the graph.
+pub const PRUNE_FADE: f32 = 0.8;
+
+/// Prune mode: the opacity of each node at `t`, from 1 (still there) to 0
+/// (pruned). A node goes once all its units have finished starting (running,
+/// or ran and exited) and everything below it in the tree has gone. Nodes
+/// that are pending, starting or failed stay, and so does the way from a
+/// failed unit to the center.
+pub fn prune_alpha(lay: &Layout, tl: &BootTimeline, t: Usec) -> Vec<f32> {
+    let vis = visuals_at(tl, t, None);
+    let mut changed: HashMap<&str, Usec> = HashMap::new();
+    for e in tl.events.iter().take_while(|e| e.t <= t) {
+        changed.insert(e.unit.as_str(), e.t);
+    }
+    let mut order = vec![ROOT];
+    let mut k = 0;
+    while k < order.len() {
+        order.extend(lay.nodes[order[k]].children.iter().copied());
+        k += 1;
+    }
+    // When each node started fading: once it is done and its subtree is gone.
+    let mut gone: Vec<Option<Usec>> = vec![None; lay.nodes.len()];
+    for &i in order.iter().rev().filter(|&&i| i != ROOT) {
+        let n = &lay.nodes[i];
+        let done = n
+            .units
+            .iter()
+            .all(|u| matches!(vis.get(u.as_str()), Some(Visual::Active | Visual::Exited)));
+        if !done || n.units.is_empty() {
+            continue;
+        }
+        let at = n
+            .units
+            .iter()
+            .filter_map(|u| changed.get(u.as_str()).copied())
+            .max()
+            .unwrap_or(0);
+        gone[i] = n
+            .children
+            .iter()
+            .try_fold(at, |at, &c| gone[c].map(|g| at.max(g)));
+    }
+    gone.iter()
+        .map(|g| match g {
+            Some(g) => (1.0 - t.saturating_sub(*g) as f32 / 1e6 / PRUNE_FADE).clamp(0.0, 1.0),
+            None => 1.0,
+        })
+        .collect()
+}
+
 /// The slowest units to start, longest first (not bootmap's own units: its
 /// "start" is the wait for a display, and bootmap-quit's the handover).
 fn slowest(lay: &Layout, tl: &BootTimeline) -> Vec<(String, Usec)> {
@@ -372,6 +441,12 @@ impl Renderer {
         }
     }
 
+    /// Prune mode (not for the shutdown view): each node's opacity at `t`.
+    pub fn fade(&self, lay: &Layout, tl: &BootTimeline, t: Usec) -> Option<Vec<f32>> {
+        (self.look.mode == crate::config::Mode::Prune && self.opts.shutdown_from.is_none())
+            .then(|| prune_alpha(lay, tl, t))
+    }
+
     /// The colour behind everything, for filling areas the picture does not cover.
     pub fn background(&self) -> Color {
         color(self.look.palette.background, 1.0)
@@ -436,6 +511,8 @@ impl Renderer {
         pm.fill(color(pal.background, 1.0));
         let vis = visuals_at(tl, t, self.opts.shutdown_from);
         let lay = f.lay;
+        let fade = self.fade(lay, tl, t);
+        let alive = |i: usize| -> f32 { fade.as_ref().map_or(1.0, |f| f[i]) };
         let cam = f.cam;
         let px = |i: usize| -> (f32, f32) {
             let (x, y) = f.pos.get(i).copied().unwrap_or((0.0, 0.0));
@@ -486,6 +563,9 @@ impl Renderer {
                 if node_vis(a) == Visual::Ghost || node_vis(b) == Visual::Ghost {
                     continue;
                 }
+                if alive(a) < 1.0 || alive(b) < 1.0 {
+                    continue;
+                }
                 let pb = if edge_focus(a, b) > 1.0 {
                     &mut lit
                 } else {
@@ -527,8 +607,14 @@ impl Renderer {
         // Tree edges, grouped by (state, focus) so each group is one path.
         // In a fixed order: overlapping translucent strokes blend by draw order,
         // and a HashMap's order changes between runs.
-        let mut groups: std::collections::BTreeMap<(u8, u8), PathBuilder> = Default::default();
+        // Fading edges (prune mode) go in a few steps of opacity, not one each.
+        const FADE_STEPS: f32 = 4.0;
+        let mut groups: std::collections::BTreeMap<(u8, u8, u8), PathBuilder> = Default::default();
         for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+            let step = (alive(i) * FADE_STEPS).ceil() as u8;
+            if step == 0 {
+                continue;
+            }
             let p = n.parent.unwrap_or(ROOT);
             let fo = edge_focus(p, i);
             let fkey = if fo > 1.0 {
@@ -538,12 +624,12 @@ impl Renderer {
             } else {
                 1
             };
-            let pb = groups.entry((node_vis(i) as u8, fkey)).or_default();
+            let pb = groups.entry((node_vis(i) as u8, fkey, step)).or_default();
             let ((x0, y0), (x1, y1)) = (px(p), px(i));
             pb.move_to(x0, y0);
             pb.line_to(x1, y1);
         }
-        for ((key, fkey), pb) in groups {
+        for ((key, fkey, step), pb) in groups {
             let (c, a, wdt) = match key {
                 k if k == Visual::Ghost as u8 => (pal.pending, 0.35, 0.7),
                 k if k == Visual::Activating as u8 || k == Visual::Stopping as u8 => {
@@ -558,6 +644,7 @@ impl Renderer {
                 0 => (a * 0.15, wdt),
                 _ => (a, wdt),
             };
+            let a = a * step as f32 / FADE_STEPS;
             if let Some(p) = pb.finish() {
                 let stroke = Stroke {
                     width: wdt * s,
@@ -572,7 +659,8 @@ impl Renderer {
             if !matches!(
                 node_vis(p.unit),
                 Visual::Active | Visual::Activating | Visual::Stopping
-            ) {
+            ) || alive(p.unit) <= 0.0
+            {
                 continue;
             }
             let (x0, y0) = px(p.unit);
@@ -590,7 +678,7 @@ impl Renderer {
             let angle = out + (j - (k - 1.0) / 2.0) * 0.6;
             let d = (cam.scale * 0.22).clamp(9.0 * s, 22.0 * s);
             let (x, y) = (x0 + d * angle.cos(), y0 + d * angle.sin());
-            let a = dim(p.unit);
+            let a = dim(p.unit) * alive(p.unit);
             let mut pb = PathBuilder::new();
             pb.move_to(x0, y0);
             pb.line_to(x, y);
@@ -622,6 +710,10 @@ impl Renderer {
         let pulse = 0.5 + 0.5 * (wall * TAU * 1.2).sin();
         let mut radii = vec![0.0f32; lay.nodes.len()];
         for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+            let fa = alive(i);
+            if fa <= 0.0 {
+                continue;
+            }
             let v = node_vis(i);
             let (x, y) = px(i);
             let is_target = n.kind == Some(UnitKind::Target);
@@ -640,12 +732,12 @@ impl Renderer {
                 Visual::Failed => (pal.failed, 1.0, base * 1.2),
             };
             radii[i] = rad;
-            let a = a * dim(i);
+            let a = a * dim(i) * fa;
             if matches!(v, Visual::Activating | Visual::Stopping) {
                 if let Some(halo) = PathBuilder::from_circle(x, y, rad * 2.6) {
                     pm.fill_path(
                         &halo,
-                        &paint(c, 0.18 * (0.4 + pulse) * dim(i)),
+                        &paint(c, 0.18 * (0.4 + pulse) * dim(i) * fa),
                         FillRule::Winding,
                         Transform::identity(),
                         None,
@@ -733,7 +825,13 @@ impl Renderer {
         }
 
         if self.opts.labels {
-            let cands = label_candidates(f, tl, t, &node_vis, &focus);
+            let mut cands = label_candidates(f, tl, t, &node_vis, &focus);
+            if fade.is_some() {
+                cands.retain_mut(|(_, i, alpha)| {
+                    *alpha *= alive(*i);
+                    *alpha > 0.0
+                });
+            }
             self.labels(pm, f, cands, &node_vis, &radii, w, h);
         }
 
@@ -1562,6 +1660,72 @@ mod tests {
         );
         look.title = Some("My boot".into());
         assert!(strip(&draw(look)) > 0);
+    }
+
+    fn sample() -> BootTimeline {
+        BootTimeline::from_json(include_str!("../../../samples/mbair-boot.json")).unwrap()
+    }
+
+    fn prune_layout(tl: &BootTimeline) -> Layout {
+        let opts = LayoutOptions {
+            prune: true,
+            ..Default::default()
+        };
+        Layout::compute(tl, &opts)
+    }
+
+    #[test]
+    fn pruning_burns_the_graph_down_to_what_failed() {
+        let tl = sample();
+        let lay = prune_layout(&tl);
+        let (start, end) = tl.span();
+        let before = prune_alpha(&lay, &tl, start.saturating_sub(1));
+        assert!(before.iter().all(|&a| a == 1.0), "all there at the start");
+
+        let after = prune_alpha(&lay, &tl, end + SETTLE_USEC);
+        let vis = visuals_at(&tl, end + SETTLE_USEC, None);
+        for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+            let failed = n.units.iter().any(|u| vis[u.as_str()] == Visual::Failed);
+            if failed {
+                // It stays, and so does its way to the center.
+                let mut cur = Some(i);
+                while let Some(c) = cur.filter(|&c| c != ROOT) {
+                    assert_eq!(
+                        after[c], 1.0,
+                        "{} is on a failure's chain",
+                        lay.nodes[c].name
+                    );
+                    cur = lay.nodes[c].parent;
+                }
+            }
+        }
+        let left = after[1..].iter().filter(|&&a| a > 0.0).count();
+        assert!(
+            left < lay.nodes.len() / 4,
+            "{left} of {} left",
+            lay.nodes.len()
+        );
+    }
+
+    #[test]
+    fn a_unit_stays_while_something_below_it_is_left() {
+        let tl = sample();
+        let lay = prune_layout(&tl);
+        let (start, end) = tl.span();
+        for k in 1..20 {
+            let t = start + (end - start) * k / 20;
+            let a = prune_alpha(&lay, &tl, t);
+            for (i, n) in lay.nodes.iter().enumerate().skip(1) {
+                for &c in &n.children {
+                    assert!(
+                        a[c] <= a[i],
+                        "at {t}: {} fades before {}",
+                        n.name,
+                        lay.nodes[c].name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -302,7 +302,8 @@ const TICKS_PER_FRAME: usize = 2;
 
 impl Scene {
     pub fn new(source: Source, graph: &GraphArgs, look: Look) -> Self {
-        let opts = graph.layout_options();
+        let mut opts = graph.layout_options();
+        opts.prune = look.mode == bootmap_core::config::Mode::Prune;
         let layout = Layout::compute(&source.tl, &opts);
         let sim = Sim::new(
             &layout,
@@ -358,9 +359,15 @@ impl Scene {
     }
 
     pub fn pick(&self, w: f32, h: f32, px: f32, py: f32) -> Option<usize> {
-        // Pointer reach scales with the screen, like the dots.
+        // Pointer reach scales with the screen, like the dots. Pruned units
+        // are gone: the pointer finds what is still there.
+        let fade = self
+            .renderer
+            .fade(&self.layout, &self.source.tl, self.source.now());
         self.frame_desc(None)
-            .pick(w, h, px, py, 14.0 * self.renderer.ui_scale)
+            .pick_where(w, h, px, py, 14.0 * self.renderer.ui_scale, |i| {
+                fade.as_ref().is_none_or(|f| f[i] > 0.0)
+            })
     }
 
     pub fn node_name(&self, i: usize) -> String {

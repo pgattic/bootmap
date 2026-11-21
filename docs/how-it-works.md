@@ -60,6 +60,15 @@ rather than a guess from similar names. A group orders by its last member to
 finish, and links to and from its members become links to and from the group.
 An instance that fails leaves its group, so a group never hides a problem.
 
+**Prune mode** (`mode = "prune"`) turns the tree around. A unit's parent is
+the nearest unit that waits for it: of the units with it in their `After=`,
+the one with the shortest `After=` chain that is still longer than its own.
+Units nothing waits for hang off the center, so the boot's goal sits there.
+The tree depends only on the dependencies, not on timing, so it is the same
+from the first frame of the boot to the last. A node fades out once all its
+units are running or have exited and its whole subtree has faded. Failed units
+never fade, so the chain from a failure to the center stays.
+
 ## Drawing
 
 Every frame is drawn on the CPU with [tiny-skia](https://github.com/RazrFalcon/tiny-skia),

@@ -38,6 +38,30 @@ Several instances of the same template, such as `modprobe@drm.service` and
 `modprobe@fuse.service`, share one dot labelled `modprobe@ ×2`. An instance
 that fails always gets a dot of its own.
 
+### Prune mode
+
+With `mode = "prune"` (see [appearance](#appearance)) the graph works the
+other way around, like a burndown chart. The middle is the boot's goal
+(usually `graphical.target` or `multi-user.target`), and every unit hangs off
+the nearest unit that waits for it, so the units that start first are at the
+edge. The whole graph is there from the start. A unit fades out once it has
+started and nothing below it is left, so the graph is cut back from the edge
+toward the middle. What is still on screen is the work left to do, and its
+outer edge is what is running right now.
+
+Failed units are never pruned, and neither is the chain from a failure to
+the middle, so a boot that went wrong ends with a picture of what failed and
+what it held up. A boot that went well ends with the middle on its own,
+plus the slowest units in the panel on the left.
+
+The whole graph is only what systemd knows about so far. In the initrd that
+is the initrd's own boot. The real system's units appear after the switch to
+the real root, and units pulled in later, for example by hardware being
+found, join the graph when systemd queues them. The shutdown view always
+works the usual way.
+
+### The panel
+
 The panel on the left shows the time since the boot started, how many units
 are in each state, and either what is starting right now or, once the boot is
 done, the slowest units. The bottom line shows how long each stage of the boot
@@ -205,6 +229,7 @@ and the `colors` and `show` groups are nested sets.
 | `font` | bundled DejaVu Sans | A TrueType or OpenType file, used for all text. |
 | `center-image` | none | A PNG drawn in the middle of the graph. |
 | `title` | `"bootmap · <hostname>"` | The heading at the top left. `""` hides it. |
+| `mode` | `"grow"` | `"grow"` or `"prune"`. See [prune mode](#prune-mode). |
 | `colors.*` | from the theme | Overrides for single colors, as `"#rrggbb"` or `"#rgb"`. See below. |
 | `show.status` | `true` | The elapsed time and the number of units in each state. |
 | `show.activity` | `true` | What is starting right now, or the slowest units once the boot is done. |
