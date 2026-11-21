@@ -286,6 +286,11 @@ pub struct Scene {
     pub cam: Camera,
     /// Keep the whole graph in view (off once the user pans or zooms).
     pub auto_fit: bool,
+    /// Prune mode, experimental: fit only what has not been pruned, so the
+    /// view zooms in as the graph burns down (`z` in the viewer).
+    pub fit_remaining: bool,
+    /// Prune mode: each node's opacity at the last physics update.
+    fade: Option<Vec<f32>>,
     snap: bool,
     /// Hovered / dragged unit, by name so they survive re-layouts.
     pub hover: Option<String>,
@@ -297,6 +302,9 @@ pub struct Scene {
 
 /// Frame rate the viewer runs at, and the physics and camera are tuned for.
 pub const VIEWER_FPS: f32 = 60.0;
+/// Fitting what is left after pruning (`fit_remaining`) zooms in at most
+/// this much further than fitting the whole graph.
+const MAX_ZOOM_IN: f32 = 3.0;
 /// Physics steps per drawn frame (settles in ~2.5 s at 60 fps).
 const TICKS_PER_FRAME: usize = 2;
 
@@ -324,6 +332,8 @@ impl Scene {
                 scale: 50.0,
             },
             auto_fit: true,
+            fit_remaining: false,
+            fade: None,
             snap: true,
             hover: None,
             dragging: None,
@@ -349,8 +359,9 @@ impl Scene {
     /// Prune mode: let the physics know which units are fading out or gone
     /// at boot time `t`, so the rest move into the room they leave.
     pub fn update_presence(&mut self, t: Usec) {
-        if let Some(fade) = self.renderer.fade(&self.layout, &self.source.tl, t) {
-            self.sim.set_presence(&fade);
+        self.fade = self.renderer.fade(&self.layout, &self.source.tl, t);
+        if let Some(fade) = &self.fade {
+            self.sim.set_presence(fade);
         }
     }
 
@@ -426,7 +437,23 @@ impl Scene {
             20.0
         };
         let margin = 0.05 * w.min(h) + label_room * self.renderer.ui_scale;
-        let target = Camera::fit(&self.pos, w, h, margin);
+        let whole = Camera::fit(&self.pos, w, h, margin);
+        let target = match self.fade.as_ref().filter(|_| self.fit_remaining) {
+            Some(fade) => {
+                let left: Vec<(f32, f32)> = self
+                    .pos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| fade.get(*i).is_none_or(|&a| a > 0.0))
+                    .map(|(_, &p)| p)
+                    .collect();
+                // Both fits center on the same point: only the zoom differs.
+                let mut cam = Camera::fit(&left, w, h, margin);
+                cam.scale = cam.scale.min(whole.scale * MAX_ZOOM_IN);
+                cam
+            }
+            None => whole,
+        };
         self.cam = if self.snap {
             target
         } else {

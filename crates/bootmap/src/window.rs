@@ -143,6 +143,10 @@ impl App {
                 "[" => s.adjust_radial(-0.1),
                 "]" => s.adjust_radial(0.1),
                 "f" | "0" => s.auto_fit = true,
+                "z" => {
+                    s.fit_remaining = !s.fit_remaining;
+                    s.auto_fit = true;
+                }
                 _ => {}
             },
             _ => {}
