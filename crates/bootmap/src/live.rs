@@ -346,6 +346,14 @@ impl Scene {
             .and_then(|n| self.layout.index.get(n).copied())
     }
 
+    /// Prune mode: let the physics know which units are fading out or gone
+    /// at boot time `t`, so the rest move into the room they leave.
+    pub fn update_presence(&mut self, t: Usec) {
+        if let Some(fade) = self.renderer.fade(&self.layout, &self.source.tl, t) {
+            self.sim.set_presence(&fade);
+        }
+    }
+
     /// Run physics to rest (for still renders).
     pub fn settle(&mut self) {
         self.sim.settle(2000);
@@ -433,12 +441,13 @@ impl Scene {
         if self.source.poll() {
             self.relayout();
         }
+        let t = self.source.now();
+        self.update_presence(t);
         for _ in 0..TICKS_PER_FRAME {
             self.sim.tick();
         }
         self.pos = self.sim.positions();
         let t1 = Instant::now();
-        let t = self.source.now();
         self.draw_at(pm, t);
         if let Some(st) = &mut self.stats {
             st.record(t1 - t0, t1.elapsed(), pm.width(), pm.height());
@@ -454,12 +463,13 @@ impl Scene {
 
     /// Advance physics and camera by `n` viewer frames (at `VIEWER_FPS`),
     /// on a fixed clock instead of the wall clock: for rendering an animation
-    /// that moves the way the viewer does.
-    pub fn advance(&mut self, n: u32, w: f32, h: f32) {
+    /// that moves the way the viewer does. `t` is the boot time being drawn.
+    pub fn advance(&mut self, n: u32, w: f32, h: f32, t: Usec) {
         for _ in 0..n {
             if self.source.poll() {
                 self.relayout();
             }
+            self.update_presence(t);
             for _ in 0..TICKS_PER_FRAME {
                 self.sim.tick();
             }

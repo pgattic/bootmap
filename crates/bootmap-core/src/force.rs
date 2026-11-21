@@ -22,6 +22,9 @@ const RING: f32 = 60.0;
 const ALPHA_MIN: f32 = 0.001;
 const ALPHA_DECAY: f32 = 0.0228; // ~300 ticks from 1.0 to ALPHA_MIN
 const VELOCITY_DECAY: f32 = 0.4;
+/// Heat while nodes fade out: enough for the rest to close in visibly,
+/// gentle enough that the graph does not reshuffle.
+const PRESENCE_REHEAT: f32 = 0.25;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ForceParams {
@@ -59,6 +62,10 @@ struct Body {
     /// Pinned position (dragged by the user, or the center node).
     fixed: Option<(f32, f32)>,
     target_r: f32,
+    /// How much the body is still there, 0..=1 (prune mode fades units out):
+    /// scales its repulsion and its springs. At 0 it stays where it is and
+    /// has no effect on the others.
+    presence: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +142,7 @@ impl Sim {
                 vy: 0.0,
                 fixed,
                 target_r,
+                presence: 1.0,
             });
         }
         // Keep user pins across rebuilds, and always pin the center.
@@ -203,6 +211,23 @@ impl Sim {
         self.bodies.is_empty()
     }
 
+    /// Set how much each node is still there (indexed like `Layout::nodes`;
+    /// missing entries mean fully there). When that changes, the simulation
+    /// warms up so the others move into the room a fading node leaves.
+    pub fn set_presence(&mut self, presence: &[f32]) {
+        let mut changed = false;
+        for (i, b) in self.bodies.iter_mut().enumerate() {
+            let p = presence.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+            if (p - b.presence).abs() > 1e-4 {
+                changed = true;
+                b.presence = p;
+            }
+        }
+        if changed {
+            self.reheat(PRESENCE_REHEAT);
+        }
+    }
+
     pub fn set_radial(&mut self, r: f32) {
         self.params.radial = r.clamp(0.0, 1.0);
         self.reheat(0.3);
@@ -256,7 +281,8 @@ impl Sim {
                 dy = 1e-3;
             }
             let len = (dx * dx + dy * dy).sqrt();
-            let k = (len - l.distance) / len * alpha * l.strength;
+            let present = a.presence.min(b.presence);
+            let k = (len - l.distance) / len * alpha * l.strength * present;
             let (fx, fy) = (dx * k, dy * k);
             self.bodies[l.b].vx -= fx * l.bias;
             self.bodies[l.b].vy -= fy * l.bias;
@@ -266,10 +292,14 @@ impl Sim {
 
         // Repulsion (O(n²): fine for a few hundred nodes).
         for i in 0..n {
+            if self.bodies[i].presence <= 0.0 {
+                continue;
+            }
             let (xi, yi) = (self.bodies[i].x, self.bodies[i].y);
             let (mut ax, mut ay) = (0.0f32, 0.0f32);
             for j in 0..n {
-                if i == j {
+                let pj = self.bodies[j].presence;
+                if i == j || pj <= 0.0 {
                     continue;
                 }
                 let mut dx = self.bodies[j].x - xi;
@@ -285,7 +315,7 @@ impl Sim {
                 if l2 > 1e6 {
                     continue;
                 }
-                let w = p.charge * alpha / l2;
+                let w = p.charge * alpha * pj / l2;
                 ax += dx * w;
                 ay += dy * w;
             }
@@ -304,6 +334,13 @@ impl Sim {
 
         // Integrate.
         for b in &mut self.bodies {
+            if b.presence <= 0.0 {
+                // Gone: stays put, so it does not drift off and pull the
+                // camera (which frames every node) along.
+                b.vx = 0.0;
+                b.vy = 0.0;
+                continue;
+            }
             match b.fixed {
                 Some((x, y)) => {
                     b.x = x;
@@ -410,6 +447,66 @@ mod tests {
             }
         }
         assert!(close < pos.len() / 20, "{close} near-coincident pairs");
+    }
+
+    #[test]
+    fn pruned_leaves_stay_put_and_the_rest_moves_into_their_room() {
+        let (lay, mut kept) = settled(0.5);
+        // What prune mode removes: leaves. Take the biggest fan of them.
+        let is_leaf = |i: usize| lay.nodes[i].children.is_empty() && lay.degree(i) == 1;
+        let hub = (1..lay.nodes.len())
+            .max_by_key(|&i| {
+                lay.nodes[i]
+                    .children
+                    .iter()
+                    .filter(|&&c| is_leaf(c))
+                    .count()
+            })
+            .unwrap();
+        let fan: Vec<usize> = lay.nodes[hub]
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| is_leaf(c))
+            .collect();
+        assert!(fan.len() >= 3, "a fan of {} leaves", fan.len());
+
+        let mut gone = kept.clone();
+        let mut presence = vec![1.0; lay.nodes.len()];
+        for &c in &fan {
+            presence[c] = 0.0;
+        }
+        gone.set_presence(&presence);
+        assert!(gone.active(), "losing nodes warms the simulation up");
+        kept.reheat(gone.alpha);
+        let before = kept.positions();
+        kept.settle(1000);
+        gone.settle(1000);
+        let (a, b) = (kept.positions(), gone.positions());
+        for &c in &fan {
+            assert_eq!(b[c], before[c], "a gone node does not move");
+        }
+
+        // The nodes closest to where the fan was end up closer to it.
+        let n = fan.len() as f32;
+        let at = fan.iter().fold((0.0, 0.0), |s, &c| {
+            (s.0 + before[c].0 / n, s.1 + before[c].1 / n)
+        });
+        let dist =
+            |p: &[(f32, f32)], i: usize| ((p[i].0 - at.0).powi(2) + (p[i].1 - at.1).powi(2)).sqrt();
+        let mut near: Vec<usize> = (1..lay.nodes.len())
+            .filter(|&i| i != hub && !fan.contains(&i))
+            .collect();
+        near.sort_by(|&i, &j| dist(&before, i).total_cmp(&dist(&before, j)));
+        near.truncate(8);
+        let mean =
+            |p: &[(f32, f32)]| near.iter().map(|&i| dist(p, i)).sum::<f32>() / near.len() as f32;
+        assert!(
+            mean(&b) < mean(&a),
+            "neighborhood {} vs {} with the fan there",
+            mean(&b),
+            mean(&a)
+        );
     }
 
     #[test]

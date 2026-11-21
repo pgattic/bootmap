@@ -246,7 +246,7 @@ fn main() -> Result<()> {
                 if t > last {
                     break;
                 }
-                scene.advance(step, w as f32, h as f32);
+                scene.advance(step, w as f32, h as f32, t);
                 scene.draw(&mut pm, t, n as f32 / fps);
                 pm.save_png(dir.join(format!("{n:05}.png")))?;
                 n += 1;
@@ -269,6 +269,9 @@ fn main() -> Result<()> {
             let (w, h) = parse_size(&size)?;
             let t = parse_at(&tl, &at)?;
             let mut scene = live::Scene::new(live::Source::replay(tl, 1.0), &graph, look);
+            // Settled as things stand at `t`: in prune mode, without what is gone.
+            scene.settle();
+            scene.update_presence(t);
             scene.settle();
             scene.hover = highlight;
             scene.renderer.ui_scale = ui_scale.unwrap_or((h as f32 / 1080.0).max(1.0));
