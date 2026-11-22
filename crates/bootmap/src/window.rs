@@ -33,20 +33,34 @@ struct App {
     last_frame: std::time::Instant,
 }
 
-/// Open the window. `prune`: prune finished units as at boot (in prune mode),
-/// as `replay` does. `view` shows the whole graph instead: on a running
-/// system the boot is long over, and pruning would leave only the center.
-/// Either way `p` switches.
+/// How the window opens.
+pub enum Open {
+    /// `view`: the running system, live.
+    Live,
+    /// `view FILE`: a recording's finished picture, paused at its end.
+    End,
+    /// `replay`: a recording from the start, as it was drawn at boot.
+    Replay,
+}
+
+/// Open the window. Only `replay` prunes finished units (in prune mode):
+/// `view` is for looking at the whole graph, and on a finished boot pruning
+/// would leave only the center. Either way `p` switches.
 pub fn run(
     source: Source,
     graph: GraphArgs,
     look: bootmap_core::config::Look,
-    prune: bool,
+    open: Open,
 ) -> Result<()> {
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
     let mut scene = Scene::new(source, &graph, look);
-    scene.renderer.opts.prune = prune;
+    scene.renderer.opts.prune = matches!(open, Open::Replay);
+    if let Open::End = open {
+        // Open on the finished picture, not on the dots swinging into place.
+        scene.source.pause_at_end();
+        scene.settle();
+    }
     let mut app = App {
         scene,
         window: None,

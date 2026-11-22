@@ -233,6 +233,15 @@ impl Source {
         }
     }
 
+    /// Replay only: jump to the end, once the picture has settled, and pause
+    /// there. Seeking and unpausing work from there as usual.
+    pub fn pause_at_end(&mut self) {
+        let (_, end) = self.tl.span();
+        if let Mode::Replay { paused_at, .. } = &mut self.mode {
+            *paused_at = Some(end + bootmap_core::render::SETTLE_USEC);
+        }
+    }
+
     pub fn toggle_pause(&mut self) {
         let now = self.now();
         if let Mode::Replay {
@@ -698,5 +707,18 @@ mod tests {
         }))
         .unwrap();
         assert!(src.poll().units);
+    }
+
+    #[test]
+    fn a_replay_can_open_paused_at_its_end() {
+        let tl = BootTimeline::from_json(include_str!("../../../samples/mbair-boot.json")).unwrap();
+        let end = tl.span().1 + bootmap_core::render::SETTLE_USEC;
+        let mut src = Source::replay(tl, 1.0);
+        src.pause_at_end();
+        assert_eq!(src.now(), end);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(src.now(), end, "paused");
+        src.seek(-1.0);
+        assert_eq!(src.now(), end - 1_000_000, "the replay keys step back");
     }
 }

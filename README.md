@@ -40,7 +40,8 @@ nix run github:pgattic/bootmap -- replay
 ```
 
 This opens a window and plays the current boot back from start to finish.
-`view` instead of `replay` shows the running system live. On a system with
+`view` instead of `replay` shows the whole graph of the running system, live.
+On a system with
 bootmap installed, the replay comes from bootmap's own recording of the boot,
 which includes the initrd.
 

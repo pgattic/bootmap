@@ -143,11 +143,12 @@ enum Cmd {
         #[command(flatten)]
         graph: GraphArgs,
     },
-    /// Watch the running system in a window, live: the whole graph.
+    /// Show the whole graph in a window: the running system, live, or a
+    /// recorded boot as it finished.
     #[cfg(feature = "window")]
     View {
-        /// Not taken: only there to point a file at `replay`.
-        #[arg(hide = true)]
+        /// A recording to show as it finished (the replay keys step back
+        /// through it). Default: the running system, live.
         input: Option<PathBuf>,
         #[command(flatten)]
         graph: GraphArgs,
@@ -290,14 +291,15 @@ fn main() -> Result<()> {
         }
         #[cfg(feature = "window")]
         Cmd::View { input, graph } => {
-            if let Some(p) = input {
-                anyhow::bail!(
-                    "`bootmap view` shows the running system; to replay a recording, use `bootmap replay {}`",
-                    p.display()
-                );
-            }
+            let (source, open) = match input {
+                Some(p) => (
+                    live::Source::replay(BootTimeline::load(&p)?, 1.0),
+                    window::Open::End,
+                ),
+                None => (live::Source::live()?, window::Open::Live),
+            };
             let look = graph.look()?;
-            window::run(live::Source::live()?, graph, look, false)?;
+            window::run(source, graph, look, open)?;
         }
         #[cfg(feature = "window")]
         Cmd::Replay {
@@ -310,7 +312,12 @@ fn main() -> Result<()> {
                 None => this_boot()?,
             };
             let look = graph.look()?;
-            window::run(live::Source::replay(tl, speed), graph, look, true)?;
+            window::run(
+                live::Source::replay(tl, speed),
+                graph,
+                look,
+                window::Open::Replay,
+            )?;
         }
         #[cfg(feature = "drm")]
         Cmd::Boot {

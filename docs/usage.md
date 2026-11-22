@@ -83,13 +83,16 @@ Two commands open a window:
 
 ```sh
 bootmap view                    # watch the running system live
+bootmap view recording.json     # a recorded boot, as it finished
 bootmap replay                  # replay this boot
 bootmap replay recording.json   # replay a recorded boot
 ```
 
 `bootmap view` shows the whole graph, with nothing pruned, so that a finished
 boot can be looked at in full. The arrangement still follows `mode`: in prune
-mode the goal is in the middle.
+mode the goal is in the middle. With a recording it opens on the finished
+picture, paused at the end; the replay keys below step back through the boot
+or play it from there.
 
 `bootmap replay` plays a boot back as it was drawn at boot, pruning included.
 Without a file it replays this boot: from bootmap's own recording,
@@ -117,7 +120,7 @@ In either window, `p` switches pruning on or off (prune mode).
 
 | Command | What it does |
 |---|---|
-| `bootmap view` | Watch the running system live, in a window. |
+| `bootmap view [FILE]` | Show the whole graph in a window: the running system live, or a recording as it finished. |
 | `bootmap replay [FILE]` | Replay a recording in a window, or this boot without one. `--speed 0.5` plays at half speed. |
 | `bootmap capture -o FILE` | Save the current boot as a recording, from what systemd remembers. |
 | `bootmap render FILE -o IMAGE.png` | Draw one frame of a recording to a PNG. `--at SECONDS` picks the moment (counted from the start of userspace; negative values reach into the initrd), `--size 1920x1080`, `--highlight UNIT` draws it as if hovered. With `--frames DIR` (and `--fps`, default 12) it writes the whole replay as numbered PNGs instead, moving as it does in the viewer: ready to turn into a video or GIF. |
