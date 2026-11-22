@@ -87,6 +87,11 @@ bootmap view /var/log/bootmap/last.json   # replay the last boot
 bootmap view                              # watch live
 ```
 
+The viewer shows the whole graph, with nothing pruned, so that a finished
+boot can be looked at in full. The arrangement still follows `mode`: in prune
+mode the goal is in the middle. Press `p` to prune as at boot and watch the
+graph burn down.
+
 | Input | Action |
 |---|---|
 | hover a dot | highlight it and its neighbors, show its details |
@@ -98,6 +103,7 @@ bootmap view                              # watch live
 | `r` | restart the replay |
 | `[` / `]` | loosen or tighten how strongly units keep to their depth |
 | `l`, `e` | labels on or off, extra dependency lines on or off |
+| `p` | prune finished units, as at boot, or show them all again (prune mode) |
 | `q` or `Esc` | quit |
 
 ## Command line

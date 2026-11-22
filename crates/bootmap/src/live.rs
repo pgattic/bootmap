@@ -404,17 +404,18 @@ impl Scene {
     }
 
     /// Prune mode: take out the units that have faded out by boot time `t`
-    /// (and bring back any that have not, when a replay goes back in time).
+    /// (and bring back any that have not, when a replay goes back in time or
+    /// pruning is turned off).
     pub fn prune(&mut self, t: Usec) {
-        let Some(fade) = self.renderer.fade(&self.full, &self.source.tl, t) else {
-            return;
+        let gone: BTreeSet<String> = match self.renderer.fade(&self.full, &self.source.tl, t) {
+            Some(fade) => fade
+                .iter()
+                .enumerate()
+                .filter(|&(_, &a)| a <= 0.0)
+                .map(|(i, _)| self.full.nodes[i].name.clone())
+                .collect(),
+            None => BTreeSet::new(),
         };
-        let gone: BTreeSet<String> = fade
-            .iter()
-            .enumerate()
-            .filter(|&(_, &a)| a <= 0.0)
-            .map(|(i, _)| self.full.nodes[i].name.clone())
-            .collect();
         if gone != self.gone {
             self.gone = gone;
             self.show();

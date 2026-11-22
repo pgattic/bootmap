@@ -36,8 +36,12 @@ struct App {
 pub fn run(source: Source, graph: GraphArgs, look: bootmap_core::config::Look) -> Result<()> {
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
+    // The viewer is for looking at the graph: the whole of it, even in prune
+    // mode (where a finished boot would leave only the center). `p` prunes.
+    let mut scene = Scene::new(source, &graph, look);
+    scene.renderer.opts.prune = false;
     let mut app = App {
-        scene: Scene::new(source, &graph, look),
+        scene,
         window: None,
         surface: None,
         pixmap: None,
@@ -143,6 +147,7 @@ impl App {
                 "[" => s.adjust_radial(-0.1),
                 "]" => s.adjust_radial(0.1),
                 "f" | "0" => s.auto_fit = true,
+                "p" => s.renderer.opts.prune = !s.renderer.opts.prune,
                 _ => {}
             },
             _ => {}

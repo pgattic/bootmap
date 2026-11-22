@@ -195,6 +195,9 @@ pub struct RenderOptions {
     /// Shutdown view: when the shutdown began. Units that stop after this
     /// fade out instead of showing as "exited", and the HUD counts down.
     pub shutdown_from: Option<Usec>,
+    /// Prune finished units, if the look's mode is prune. Off shows the whole
+    /// graph in the same arrangement (the viewer's default).
+    pub prune: bool,
 }
 
 impl Default for RenderOptions {
@@ -204,6 +207,7 @@ impl Default for RenderOptions {
             labels: true,
             hud: true,
             shutdown_from: None,
+            prune: true,
         }
     }
 }
@@ -421,8 +425,10 @@ impl Renderer {
 
     /// Prune mode (not for the shutdown view): each node's opacity at `t`.
     pub fn fade(&self, lay: &Layout, tl: &BootTimeline, t: Usec) -> Option<Vec<f32>> {
-        (self.look.mode == crate::config::Mode::Prune && self.opts.shutdown_from.is_none())
-            .then(|| prune_alpha(lay, tl, t))
+        (self.look.mode == crate::config::Mode::Prune
+            && self.opts.prune
+            && self.opts.shutdown_from.is_none())
+        .then(|| prune_alpha(lay, tl, t))
     }
 
     /// The colour behind everything, for filling areas the picture does not cover.
@@ -1702,6 +1708,23 @@ mod tests {
             "{left} of {} left",
             lay.nodes.len()
         );
+    }
+
+    #[test]
+    fn pruning_can_be_turned_off_and_never_happens_at_shutdown() {
+        let tl = sample();
+        let lay = prune_layout(&tl);
+        let end = tl.span().1 + SETTLE_USEC;
+        let mut r = Renderer::new(RenderOptions::default(), Look::default());
+        assert!(
+            r.fade(&lay, &tl, end).is_some(),
+            "prune is the default mode"
+        );
+        r.opts.prune = false;
+        assert!(r.fade(&lay, &tl, end).is_none(), "the viewer's whole graph");
+        r.opts.prune = true;
+        r.opts.shutdown_from = Some(end);
+        assert!(r.fade(&lay, &tl, end).is_none());
     }
 
     #[test]
