@@ -286,6 +286,8 @@ impl Source {
         }
     }
 
+    /// Play the replay from the start, paused or not (`view FILE` opens paused
+    /// at the end: staying paused would only show the start, all pending).
     pub fn restart(&mut self) {
         if let Mode::Replay {
             base,
@@ -297,9 +299,7 @@ impl Source {
             let (start, _) = self.tl.span();
             *base = start.saturating_sub(200_000);
             *started = Instant::now();
-            if paused_at.is_some() {
-                *paused_at = Some(*base);
-            }
+            *paused_at = None;
         }
     }
 }
@@ -720,5 +720,12 @@ mod tests {
         assert_eq!(src.now(), end, "paused");
         src.seek(-1.0);
         assert_eq!(src.now(), end - 1_000_000, "the replay keys step back");
+
+        // Restarting plays from the start, even when paused.
+        src.restart();
+        let t0 = src.now();
+        assert!(t0 < src.tl.span().0, "back before the first event");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(src.now() > t0, "and playing");
     }
 }

@@ -110,7 +110,7 @@ In either window, `p` switches pruning on or off (prune mode).
 | `f` or `0` | fit the whole graph in the window again |
 | `space` | pause or resume the replay |
 | `←` / `→` | step a quarter second back or forward |
-| `r` | restart the replay |
+| `r` | play the replay from the start |
 | `[` / `]` | loosen or tighten how strongly units keep to their depth |
 | `l`, `e` | labels on or off, extra dependency lines on or off |
 | `p` | prune finished units, as at boot, or show them all again (prune mode) |
