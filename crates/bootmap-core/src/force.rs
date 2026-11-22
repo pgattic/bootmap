@@ -110,24 +110,32 @@ impl Sim {
     /// simulation warms up so the graph moves into its new shape.
     pub fn rebuild(&mut self, lay: &Layout) {
         let old: HashMap<&str, &Body> = self.bodies.iter().map(|b| (b.name.as_str(), b)).collect();
-        let mut bodies: Vec<Body> = Vec::with_capacity(lay.nodes.len());
-        let mut added = false;
+        let parent_name = |i: usize| lay.nodes[i].parent.map(|p| lay.nodes[p].name.clone());
+        let mut slots: Vec<Option<Body>> = vec![None; lay.nodes.len()];
         let mut moved = false;
         let mut kept = 0;
+        // Known nodes first, where they are: new ones spawn next to them.
         for (i, n) in lay.nodes.iter().enumerate() {
-            let target_r = radius(n.depth) * RING;
-            let parent = n.parent.map(|p| lay.nodes[p].name.clone());
             if let Some(b) = old.get(n.name.as_str()) {
                 kept += 1;
+                let parent = parent_name(i);
                 moved |= b.parent != parent;
-                bodies.push(Body {
-                    target_r,
+                slots[i] = Some(Body {
+                    target_r: radius(n.depth) * RING,
                     parent,
                     ..(*b).clone()
                 });
-                continue;
             }
-            added = true;
+        }
+        // Then new ones, from the center out, so that a new parent is placed
+        // before its new children (node order follows names, not the tree).
+        let mut new: Vec<usize> = (0..lay.nodes.len())
+            .filter(|&i| slots[i].is_none())
+            .collect();
+        new.sort_by_key(|&i| lay.nodes[i].depth);
+        let added = !new.is_empty();
+        for i in new {
+            let n = &lay.nodes[i];
             let (x, y) = if old.is_empty() {
                 // Fresh start: seed from the radial layout.
                 let (x, y) = n.xy();
@@ -136,25 +144,28 @@ impl Sim {
                 // Spawn just outside the parent, nudged by a stable jitter.
                 let p = n
                     .parent
-                    .and_then(|p| bodies.get(p))
+                    .and_then(|p| slots[p].as_ref())
                     .map(|b| (b.x, b.y))
                     .unwrap_or((0.0, 0.0));
                 let a = hash_angle(&n.name);
                 let d = self.params.link_distance * 0.5;
                 (p.0 + d * a.cos(), p.1 + d * a.sin())
             };
-            let fixed = (i == ROOT).then_some((0.0, 0.0));
-            bodies.push(Body {
+            slots[i] = Some(Body {
                 name: n.name.clone(),
                 x,
                 y,
                 vx: 0.0,
                 vy: 0.0,
-                fixed,
-                target_r,
-                parent,
+                fixed: (i == ROOT).then_some((0.0, 0.0)),
+                target_r: radius(n.depth) * RING,
+                parent: parent_name(i),
             });
         }
+        let mut bodies: Vec<Body> = slots
+            .into_iter()
+            .map(|b| b.expect("every node is placed"))
+            .collect();
         // Keep user pins across rebuilds, and always pin the center.
         if let Some(b) = bodies.get_mut(ROOT) {
             b.fixed = Some((0.0, 0.0));
@@ -512,6 +523,35 @@ mod tests {
         // Same layout: nothing moves on rebuild.
         s.rebuild(&lay);
         assert_eq!(before, s.positions());
+    }
+
+    #[test]
+    fn new_nodes_spawn_next_to_their_parent_even_when_it_is_new_too() {
+        let lay = layout();
+        // A child listed before its parent, both away from the center.
+        let (c, p) = (1..lay.nodes.len())
+            .filter_map(|c| Some((c, lay.nodes[c].parent?)))
+            .find(|&(c, p)| p > c && lay.nodes[p].parent.is_some_and(|g| g != ROOT))
+            .expect("the sample has a child listed before its parent");
+        let g = lay.nodes[p].parent.unwrap();
+
+        // Both join at once, as after the switch to the real root.
+        let mut s = Sim::new(&lay.without(|i| i == c || i == p), ForceParams::default());
+        s.settle(400);
+        s.rebuild(&lay);
+        let pos = s.positions();
+        let dist = |a: usize, b: usize| {
+            ((pos[a].0 - pos[b].0).powi(2) + (pos[a].1 - pos[b].1).powi(2)).sqrt()
+        };
+        let spawn = ForceParams::default().link_distance * 0.5 / RING;
+        assert!(
+            (dist(p, g) - spawn).abs() < 1e-4,
+            "the parent spawns by its own parent"
+        );
+        assert!(
+            (dist(c, p) - spawn).abs() < 1e-4,
+            "the child spawns by its new parent, not at the center"
+        );
     }
 
     #[test]
