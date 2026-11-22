@@ -259,8 +259,10 @@ impl BootTimeline {
     /// unit's timestamps only describe its latest run, so rebuilding from
     /// them would erase the initrd run of anything the real system starts
     /// again (journald, udevd). From the new systemd's start on, its
-    /// timestamps are the record. Whatever changed while we were disconnected
-    /// is reconciled with one event per unit at `switch_time`.
+    /// timestamps are the record, and so they are before it for units we
+    /// never saw in the initrd (a mount that came and went while we were not
+    /// looking). Whatever changed while we were disconnected is reconciled
+    /// with one event per unit at `switch_time`.
     pub fn merge_snapshot(&mut self, new: BootTimeline, switch_time: Usec) {
         let cut = new.phases.userspace;
         self.host = new.host;
@@ -285,8 +287,14 @@ impl BootTimeline {
 
         let mut events = std::mem::take(&mut self.events);
         events.retain(|e| e.t < cut);
+        let seen: std::collections::HashSet<String> =
+            events.iter().map(|e| e.unit.clone()).collect();
         self.synthesize_events();
-        events.extend(self.events.drain(..).filter(|e| e.t >= cut));
+        events.extend(
+            self.events
+                .drain(..)
+                .filter(|e| e.t >= cut || !seen.contains(&e.unit)),
+        );
         events.sort_by_key(|e| e.t);
 
         let mut last: std::collections::HashMap<&str, UnitState> = std::collections::HashMap::new();
@@ -557,5 +565,39 @@ mod tests {
             [(120, Activating), (220, Active), (1000, Inactive)]
         );
         assert!(old.events.windows(2).all(|w| w[0].t <= w[1].t));
+    }
+
+    #[test]
+    fn merge_snapshot_keeps_the_history_of_units_not_seen_in_the_initrd() {
+        use UnitState::*;
+        let mut old = BootTimeline::default();
+        old.units.insert(
+            "seen.service".into(),
+            unit("seen.service", Active, Some(100), Some(200)),
+        );
+        old.synthesize_events();
+
+        // Mounted and unmounted in the initrd without us seeing it: only the
+        // new systemd knows, and its times are before the real system began.
+        let mut new = BootTimeline::default();
+        new.phases.userspace = 900;
+        let mut mount = unit("sysroot-x.mount", Inactive, Some(300), Some(300));
+        mount.t_inactive = Some(800);
+        new.units.insert(mount.name.clone(), mount);
+        new.units.insert(
+            "seen.service".into(),
+            unit("seen.service", Active, Some(100), Some(200)),
+        );
+
+        old.merge_snapshot(new, 1000);
+        assert_eq!(
+            history(&old, "sysroot-x.mount"),
+            [(300, Activating), (300, Active), (800, Inactive)]
+        );
+        assert_eq!(
+            history(&old, "seen.service"),
+            [(100, Activating), (200, Active)],
+            "what we watched is not doubled"
+        );
     }
 }

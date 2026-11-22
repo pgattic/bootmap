@@ -1748,8 +1748,7 @@
         "after": [
           "systemd-random-seed.service"
         ]
-      },
-      "job": true
+      }
     },
     "fstrim.service": {
       "name": "fstrim.service",
@@ -2301,8 +2300,7 @@
           "sysinit.target",
           "basic.target"
         ]
-      },
-      "job": true
+      }
     },
     "linger-users.service": {
       "name": "linger-users.service",
@@ -2496,8 +2494,7 @@
           "systemd-journald.socket",
           "system-modprobe.slice"
         ]
-      },
-      "job": true
+      }
     },
     "modprobe@drm.service": {
       "name": "modprobe@drm.service",
@@ -5041,8 +5038,7 @@
           "system.slice",
           "systemd-journald.socket"
         ]
-      },
-      "job": true
+      }
     },
     "systemd-journal-flush.service": {
       "name": "systemd-journal-flush.service",
@@ -5253,8 +5249,7 @@
           "system.slice",
           "first-boot-complete.target"
         ]
-      },
-      "job": true
+      }
     },
     "systemd-machined.service": {
       "name": "systemd-machined.service",
@@ -5474,8 +5469,7 @@
           "system.slice",
           "systemd-journald.socket"
         ]
-      },
-      "job": true
+      }
     },
     "systemd-quotacheck-root.service": {
       "name": "systemd-quotacheck-root.service",
@@ -5880,8 +5874,7 @@
           "-.mount",
           "system.slice"
         ]
-      },
-      "job": true
+      }
     },
     "systemd-udev-load-credentials.service": {
       "name": "systemd-udev-load-credentials.service",
@@ -6030,8 +6023,7 @@
           "system.slice",
           "systemd-journald.socket"
         ]
-      },
-      "job": true
+      }
     },
     "systemd-update-utmp.service": {
       "name": "systemd-update-utmp.service",
@@ -6681,6 +6673,16 @@
       "t": 1749503,
       "unit": "initrd-parse-etc.service",
       "state": "activating"
+    },
+    {
+      "t": 1754922,
+      "unit": "sysroot-run-credentials-systemd\\x2djournald.service.mount",
+      "state": "activating"
+    },
+    {
+      "t": 1754922,
+      "unit": "sysroot-run-credentials-systemd\\x2djournald.service.mount",
+      "state": "active"
     },
     {
       "t": 1755244,
