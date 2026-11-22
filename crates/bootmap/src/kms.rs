@@ -316,6 +316,16 @@ pub fn run(
     let shutdown_from = shutdown.then(|| source.begin_shutdown());
     // A shutdown is not a boot recording: never overwrite the saved timeline.
     let replay = shutdown || matches!(source.mode, crate::live::Mode::Replay { .. });
+    if !replay && source.tl.phases.finish > 0 && !source.tl.phases.in_initrd {
+        // Started after the boot, typically by `nixos-rebuild switch` (which
+        // starts what sysinit.target wants). There is nothing to show, and
+        // waiting for a display would take it from the login screen the next
+        // time the desktop lets go of it (at logout). Nor is there a boot to
+        // record: last.json keeps the real one.
+        eprintln!("bootmap: the boot has already finished; nothing to show");
+        sd_notify("READY=1");
+        return Ok(());
+    }
     let mut scene = Scene::new(source, &graph, look);
     scene.renderer.opts.shutdown_from = shutdown_from;
     let agent_marker = released_marker.with_file_name("agent");

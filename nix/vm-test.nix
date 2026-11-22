@@ -234,6 +234,17 @@ pkgs.testers.runNixOSTest {
         held.succeed("bootmap render /var/log/bootmap/last.json -o /tmp/final.png")
         held.copy_from_machine("/tmp/final.png", "")
 
+    with subtest("held: started again after the boot, it leaves the screen and the recording alone"):
+        # What nixos-rebuild switch does: it starts what sysinit.target wants.
+        # bootmap used to wait for the display and take it at the next logout.
+        held.succeed("cp /var/log/bootmap/last.json /tmp/last-before.json")
+        held.succeed("systemctl start bootmap.service")
+        held.wait_until_succeeds("! systemctl is-active bootmap.service", timeout=30)
+        held.fail("systemctl is-failed bootmap.service")
+        held.succeed("journalctl -b -u bootmap.service | grep -q 'boot has already finished'")
+        held.succeed("cmp /var/log/bootmap/last.json /tmp/last-before.json")
+        held.succeed("test $(cat /sys/class/tty/tty0/active) = tty1")
+
     with subtest("luks: the passphrase prompt is shown and answered from the keyboard"):
         luks.start()
         luks.wait_for_console_text("bootmap: asking for a passphrase", timeout=180)
