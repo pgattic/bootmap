@@ -36,12 +36,13 @@ what is running, what is still waiting, and what is holding the boot up.
 On any Linux system running systemd, with [Nix](https://nixos.org):
 
 ```sh
-nix run github:pgattic/bootmap -- view
+nix run github:pgattic/bootmap -- replay
 ```
 
-This opens a window showing the current boot. On a system with bootmap
-installed, `bootmap view /var/log/bootmap/last.json` replays the last boot from
-start to finish.
+This opens a window and plays the current boot back from start to finish.
+`view` instead of `replay` shows the running system live. On a system with
+bootmap installed, the replay comes from bootmap's own recording of the boot,
+which includes the initrd.
 
 ## Install on NixOS
 

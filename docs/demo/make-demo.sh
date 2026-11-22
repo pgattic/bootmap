@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Renders docs/demo/boot.gif from a recorded boot, moving the way a replay in
-# `bootmap view` does: the dots settle into place while the boot plays in real
+# `bootmap replay` does: the dots settle into place while the boot plays in real
 # time and burns down. The render runs on a moment past the last event, which
 # leaves the center on its own for about a second at the end.
 #

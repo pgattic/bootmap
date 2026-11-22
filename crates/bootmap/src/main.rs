@@ -68,7 +68,7 @@ impl GraphArgs {
         o.processes = !self.no_processes;
         o
     }
-    /// For `view` and `render`, run from a terminal: a configuration that
+    /// For `view`, `replay` and `render`, run from a terminal: a configuration that
     /// was asked for or exists but does not work is an error.
     #[cfg(any(feature = "tools", feature = "window"))]
     pub fn look(&self) -> Result<Look> {
@@ -143,9 +143,21 @@ enum Cmd {
         #[command(flatten)]
         graph: GraphArgs,
     },
-    /// Replay a recording (or watch live, without a file) in a window.
+    /// Watch the running system in a window, live: the whole graph.
     #[cfg(feature = "window")]
     View {
+        /// Not taken: only there to point a file at `replay`.
+        #[arg(hide = true)]
+        input: Option<PathBuf>,
+        #[command(flatten)]
+        graph: GraphArgs,
+    },
+    /// Replay a boot in a window, as it was drawn at boot.
+    #[cfg(feature = "window")]
+    Replay {
+        /// A recording (from `bootmap boot` or `capture`). Default: this boot,
+        /// from bootmap's recording of it if there is one (it saw the initrd
+        /// too), else from what systemd still knows about it.
         input: Option<PathBuf>,
         /// Replay speed multiplier (0.5 = half speed).
         #[arg(long, default_value_t = 1.0)]
@@ -157,7 +169,7 @@ enum Cmd {
     #[cfg(feature = "drm")]
     Boot {
         /// Where to save the recorded timeline once boot finishes.
-        #[arg(long, default_value = "/var/log/bootmap/last.json")]
+        #[arg(long, default_value = RECORD_PATH)]
         record: PathBuf,
         /// Keep showing the finished graph this many seconds (0 = until stopped).
         #[arg(long, default_value_t = 0.0)]
@@ -189,24 +201,7 @@ fn main() -> Result<()> {
         }
         #[cfg(feature = "tools")]
         Cmd::Capture { output, slack } => {
-            let mut sd = Systemd::connect()?;
-            let mut tl = sd.snapshot()?;
-            if tl.phases.finish > 0 {
-                let cutoff = tl.phases.finish + (slack * 1e6) as u64;
-                tl.units
-                    .retain(|_, u| u.t_activating.is_none_or(|t| t <= cutoff));
-                tl.synthesize_events();
-            }
-            eprintln!(
-                "captured {} units, {} events (via {})",
-                tl.units.len(),
-                tl.events.len(),
-                if sd.is_private() {
-                    "private socket"
-                } else {
-                    "system bus"
-                }
-            );
+            let tl = capture(slack)?;
             match output {
                 Some(p) => std::fs::write(&p, tl.to_json())
                     .with_context(|| format!("writing {}", p.display()))?,
@@ -294,17 +289,28 @@ fn main() -> Result<()> {
             );
         }
         #[cfg(feature = "window")]
-        Cmd::View {
+        Cmd::View { input, graph } => {
+            if let Some(p) = input {
+                anyhow::bail!(
+                    "`bootmap view` shows the running system; to replay a recording, use `bootmap replay {}`",
+                    p.display()
+                );
+            }
+            let look = graph.look()?;
+            window::run(live::Source::live()?, graph, look, false)?;
+        }
+        #[cfg(feature = "window")]
+        Cmd::Replay {
             input,
             speed,
             graph,
         } => {
-            let source = match input {
-                Some(p) => live::Source::replay(BootTimeline::load(&p)?, speed),
-                None => live::Source::live()?,
+            let tl = match input {
+                Some(p) => BootTimeline::load(&p)?,
+                None => this_boot()?,
             };
             let look = graph.look()?;
-            window::run(source, graph, look)?;
+            window::run(live::Source::replay(tl, speed), graph, look, true)?;
         }
         #[cfg(feature = "drm")]
         Cmd::Boot {
@@ -339,6 +345,52 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Where `bootmap boot` saves the boot it followed.
+#[cfg(any(feature = "drm", feature = "window"))]
+const RECORD_PATH: &str = "/var/log/bootmap/last.json";
+
+/// A snapshot of this boot from systemd, without units first started more
+/// than `slack` seconds after the boot finished.
+#[cfg(any(feature = "tools", feature = "window"))]
+fn capture(slack: f64) -> Result<BootTimeline> {
+    let mut sd = Systemd::connect()?;
+    let mut tl = sd.snapshot()?;
+    if tl.phases.finish > 0 {
+        let cutoff = tl.phases.finish + (slack * 1e6) as u64;
+        tl.units
+            .retain(|_, u| u.t_activating.is_none_or(|t| t <= cutoff));
+        tl.synthesize_events();
+    }
+    eprintln!(
+        "captured {} units, {} events (via {})",
+        tl.units.len(),
+        tl.events.len(),
+        if sd.is_private() {
+            "private socket"
+        } else {
+            "system bus"
+        }
+    );
+    Ok(tl)
+}
+
+/// This boot, to replay: bootmap's recording of it if it made one (it saw the
+/// initrd too), else a snapshot from systemd.
+#[cfg(feature = "window")]
+fn this_boot() -> Result<BootTimeline> {
+    let id = bootmap_core::systemd::current_boot_id();
+    match BootTimeline::load(std::path::Path::new(RECORD_PATH)) {
+        Ok(tl) if !id.is_empty() && tl.boot_id == id => {
+            eprintln!("replaying {RECORD_PATH}, bootmap's recording of this boot");
+            Ok(tl)
+        }
+        _ => {
+            eprintln!("no recording of this boot in {RECORD_PATH}; replaying what systemd knows");
+            capture(30.0)
+        }
+    }
 }
 
 #[cfg(feature = "tools")]

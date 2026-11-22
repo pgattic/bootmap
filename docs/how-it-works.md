@@ -164,7 +164,7 @@ conflict by silently dropping the login screen's job.
 
 The look of the graph comes from a TOML file, `/etc/bootmap.toml` (the keys
 are listed under [appearance](usage.md#appearance)). `bootmap boot`,
-`bootmap view` and `bootmap render` all read it, so a replay looks like the
+`bootmap view`, `bootmap replay` and `bootmap render` all read it, so a replay looks like the
 boot did; `--config PATH` reads another file. On NixOS the module writes it
 from `services.bootmap.settings`, and with `initrd = true` it also puts the
 file, the font and the center image into the initrd, since the boot-time

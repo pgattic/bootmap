@@ -10,7 +10,7 @@
   libxrandr,
   libxi,
   # Only `bootmap boot`, for the boot-time services: no window, no tools,
-  # no windowing libraries. The full build adds `view`, `render`, `capture`.
+  # no windowing libraries. The full build adds `view`, `replay`, `render`, `capture`.
   bootOnly ? false,
 }:
 

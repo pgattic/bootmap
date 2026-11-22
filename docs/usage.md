@@ -79,18 +79,25 @@ took: firmware, boot loader, kernel, initrd and the rest.
 
 ## The viewer
 
-`bootmap view` opens a window. With a file, it replays a recorded boot; without
-one, it watches the running system live.
+Two commands open a window:
 
 ```sh
-bootmap view /var/log/bootmap/last.json   # replay the last boot
-bootmap view                              # watch live
+bootmap view                    # watch the running system live
+bootmap replay                  # replay this boot
+bootmap replay recording.json   # replay a recorded boot
 ```
 
-The viewer shows the whole graph, with nothing pruned, so that a finished
+`bootmap view` shows the whole graph, with nothing pruned, so that a finished
 boot can be looked at in full. The arrangement still follows `mode`: in prune
-mode the goal is in the middle. Press `p` to prune as at boot and watch the
-graph burn down.
+mode the goal is in the middle.
+
+`bootmap replay` plays a boot back as it was drawn at boot, pruning included.
+Without a file it replays this boot: from bootmap's own recording,
+`/var/log/bootmap/last.json`, when that is this boot's (it covers the initrd
+too), otherwise from what systemd still knows about the boot. `--speed 0.5`
+plays at half speed.
+
+In either window, `p` switches pruning on or off (prune mode).
 
 | Input | Action |
 |---|---|
@@ -110,12 +117,13 @@ graph burn down.
 
 | Command | What it does |
 |---|---|
-| `bootmap view [FILE]` | Replay a recording, or watch live without one. `--speed 0.5` plays at half speed. |
+| `bootmap view` | Watch the running system live, in a window. |
+| `bootmap replay [FILE]` | Replay a recording in a window, or this boot without one. `--speed 0.5` plays at half speed. |
 | `bootmap capture -o FILE` | Save the current boot as a recording, from what systemd remembers. |
 | `bootmap render FILE -o IMAGE.png` | Draw one frame of a recording to a PNG. `--at SECONDS` picks the moment (counted from the start of userspace; negative values reach into the initrd), `--size 1920x1080`, `--highlight UNIT` draws it as if hovered. With `--frames DIR` (and `--fps`, default 12) it writes the whole replay as numbered PNGs instead, moving as it does in the viewer: ready to turn into a video or GIF. |
 | `bootmap boot` | The boot-time mode. The NixOS module runs it; you do not need to. |
 
-Options shared by `view`, `render` and `boot`:
+Options shared by `view`, `replay`, `render` and `boot`:
 
 | Option | Effect |
 |---|---|
@@ -289,12 +297,12 @@ moment.
 with a message, and so does a font or image that cannot be loaded. If a file
 is broken anyway, bootmap logs `ignoring configuration` and uses the defaults.
 
-`bootmap view` and `bootmap render` read the same file, so a replay looks as
-the boot did. To try settings without rebuilding, point them at another file
-with `--config PATH`:
+`bootmap view`, `bootmap replay` and `bootmap render` read the same file, so a
+replay looks as the boot did. To try settings without rebuilding, point them
+at another file with `--config PATH`:
 
 ```sh
-bootmap view --config ./try.toml /var/log/bootmap/last.json
+bootmap replay --config ./try.toml
 bootmap check-config ./try.toml
 ```
 
@@ -311,6 +319,6 @@ journalctl -b -u bootmap.service
 | Nothing shows at first; the log says `no graphics device yet` | No graphics driver this early. The graph appears once the driver loads (the log then says `drawing on`); for an earlier picture, see [starting in the initrd](#starting-in-the-initrd). |
 | Nothing shows at all on an NVIDIA machine | The proprietary driver only offers the screen to programs like bootmap with kernel modesetting: set `hardware.nvidia.modesetting.enable = true;` (the default with driver 535 or newer), which adds `nvidia-drm.modeset=1`. |
 | The log says `graphics device(s), none usable` | A driver is loaded, but bootmap could not use any output; the lines just above it in the log say why for each one (for example, no monitor connected). |
-| The graph shows briefly, then the login screen | Expected: bootmap steps aside for your login screen. Replay the boot with `bootmap view /var/log/bootmap/last.json`. |
+| The graph shows briefly, then the login screen | Expected: bootmap steps aside for your login screen. Replay the boot with `bootmap replay`. |
 | The build fails mentioning Plymouth | Disable `boot.plymouth.enable`; both want the screen. |
-| `bootmap view` fails to open a window | It needs a running desktop (Wayland or X11). |
+| `bootmap view` or `bootmap replay` fails to open a window | It needs a running desktop (Wayland or X11). |

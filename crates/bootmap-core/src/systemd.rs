@@ -238,7 +238,7 @@ impl Systemd {
         self.subscribe()?;
         let mut tl = BootTimeline {
             host: read_trim("/proc/sys/kernel/hostname"),
-            boot_id: read_trim("/proc/sys/kernel/random/boot_id").replace('-', ""),
+            boot_id: current_boot_id(),
             phases: self.phases()?,
             ..Default::default()
         };
@@ -431,6 +431,11 @@ fn is_root() -> bool {
     std::fs::metadata("/proc/self")
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0)
         .unwrap_or(false)
+}
+
+/// This boot's ID, as recordings store it (hex, without dashes).
+pub fn current_boot_id() -> String {
+    read_trim("/proc/sys/kernel/random/boot_id").replace('-', "")
 }
 
 /// CLOCK_MONOTONIC in µs (same clock as systemd's `*TimestampMonotonic`).

@@ -7,14 +7,14 @@ The flake provides the toolchain:
 ```sh
 nix develop                       # Rust, cargo, clippy, the libraries
 cargo build
-cargo run -- view samples/mbair-initrd-boot.json
+cargo run -- replay samples/mbair-initrd-boot.json
 ```
 
 Packages:
 
 | Package | Contents |
 |---|---|
-| `bootmap` (default) | Everything: `view`, `render`, `capture`, `boot`. |
+| `bootmap` (default) | Everything: `view`, `replay`, `render`, `capture`, `boot`. |
 | `bootmap-minimal` | Only `bootmap boot`, without windowing libraries; for a smaller initrd. |
 
 They are built from these cargo features of the `bootmap` crate:
@@ -22,7 +22,7 @@ They are built from these cargo features of the `bootmap` crate:
 | Feature | Adds |
 |---|---|
 | `drm` | `bootmap boot`: KMS display, terminal, password agent. |
-| `window` | `bootmap view` (winit and softbuffer). |
+| `window` | `bootmap view` and `bootmap replay` (winit and softbuffer). |
 | `tools` | `bootmap capture` and `bootmap render` (and PNG output). |
 
 ## Code layout
@@ -38,7 +38,7 @@ crates/bootmap-core/      the library
 crates/bootmap/           the command
   main.rs                 command line (including check-config)
   live.rs                 live and replayed sources, the scene (layout, physics, camera)
-  window.rs               bootmap view
+  window.rs               bootmap view and replay
   kms.rs                  bootmap boot: main loop, following the boot from the initrd
   display.rs              KMS outputs
   vt.rs                   virtual terminal and keyboard

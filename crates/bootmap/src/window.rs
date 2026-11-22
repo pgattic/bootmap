@@ -33,13 +33,20 @@ struct App {
     last_frame: std::time::Instant,
 }
 
-pub fn run(source: Source, graph: GraphArgs, look: bootmap_core::config::Look) -> Result<()> {
+/// Open the window. `prune`: prune finished units as at boot (in prune mode),
+/// as `replay` does. `view` shows the whole graph instead: on a running
+/// system the boot is long over, and pruning would leave only the center.
+/// Either way `p` switches.
+pub fn run(
+    source: Source,
+    graph: GraphArgs,
+    look: bootmap_core::config::Look,
+    prune: bool,
+) -> Result<()> {
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Poll);
-    // The viewer is for looking at the graph: the whole of it, even in prune
-    // mode (where a finished boot would leave only the center). `p` prunes.
     let mut scene = Scene::new(source, &graph, look);
-    scene.renderer.opts.prune = false;
+    scene.renderer.opts.prune = prune;
     let mut app = App {
         scene,
         window: None,

@@ -109,8 +109,8 @@ in
       defaultText = lib.literalExpression "bootmap.packages.\${system}.bootmap";
       description = ''
         bootmap build to install and to run at boot. Installed for users:
-        `bootmap view /var/log/bootmap/last.json` replays the recorded boot,
-        `bootmap view` watches systemd live.
+        `bootmap replay` replays this boot, `bootmap view` watches systemd
+        live.
       '';
     };
 
@@ -182,7 +182,7 @@ in
     recordPath = mkOption {
       type = types.str;
       default = "/var/log/bootmap/last.json";
-      description = "Where the recorded boot timeline is saved (view it later with `bootmap view <file>`).";
+      description = "Where the recorded boot timeline is saved (replay it with `bootmap replay <file>`).";
     };
 
     initrd = mkOption {
@@ -236,8 +236,8 @@ in
       description = ''
         How the graph looks: theme, colors, text size, font, a title, a
         picture in the middle, and which panels are shown. Written as TOML to
-        {file}`/etc/bootmap.toml`, which `bootmap boot`, `bootmap view` and
-        `bootmap render` read, and with `initrd` also to the initrd. Keys are
+        {file}`/etc/bootmap.toml`, which `bootmap boot`, `bootmap view`,
+        `bootmap replay` and `bootmap render` read, and with `initrd` also to the initrd. Keys are
         written as in the file (`text-scale`, `center-image`, `[colors]`,
         `[show]`); see "Appearance" in docs/usage.md for all of them. The
         build fails if `bootmap check-config` rejects the result, for example
